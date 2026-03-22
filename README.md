@@ -18,6 +18,10 @@ Copy-trade whale wallets on Polymarket via Telegram — paper or live mode.
 │  │ (12s poll)│  │ (Guardrails) │  │ (WebSocket + 5min poll)│ │
 │  └──────────┘  └──────┬───────┘  └────────────────────────┘ │
 │                        │                                     │
+│  ┌──────────────────┐  │                                     │
+│  │ Catchup Service  │──┘ (startup / mode switch / new wallet)│
+│  └──────────────────┘                                        │
+│                        │                                     │
 │              ┌─────────┴──────────┐                          │
 │              ▼                    ▼                           │
 │        Paper Trade          Live Order                       │
@@ -157,12 +161,105 @@ On Polymarket, each bet variant (e.g. "Lakers -3.5 Spread", "Lakers Moneyline", 
 
 ## Configuration
 
-| Variable             | Default | Description                          |
-| -------------------- | ------- | ------------------------------------ |
-| `INITIAL_BALANCE`    | `215`   | Paper starting balance (USDC)        |
-| `POLL_INTERVAL_MS`   | `12000` | Polling interval (ms)                |
-| `DAILY_MAX_EXPOSURE` | `0.10`  | Max % of balance deployable per day  |
-| `POSITION_SIZE_PCT`  | `0.02`  | Per-trade size as % of daily balance |
+| Variable               | Default    | Description                             |
+| ---------------------- | ---------- | --------------------------------------- |
+| `INITIAL_BALANCE`      | `215`      | Paper starting balance (USDC)           |
+| `POLL_INTERVAL_MS`     | `12000`    | Polling interval (ms)                   |
+| `DAILY_MAX_EXPOSURE`   | `0.10`     | Max % of balance deployable per day     |
+| `POSITION_SIZE_PCT`    | `0.02`     | Per-trade size as % of daily balance    |
+| `CATCHUP_ENABLED`      | `true`     | Enable/disable catchup scan             |
+| `CATCHUP_MAX_SLIPPAGE` | `0.08`     | Max price drift from whale entry (in $) |
+| `CATCHUP_MODE`         | `relative` | Slippage mode: `absolute` or `relative` |
+
+### Catchup Feature
+
+When the bot starts, switches modes (`/golive` or `/gopaper`), or a new wallet is added (`/addwallet`), the **Catchup Service** scans all tracked wallets' open positions on Polymarket and copies any trades where the price hasn't moved too far from the whale's entry.
+
+This means:
+
+- If the bot goes offline and a whale opens a trade while it's down, the bot will catch up on restart
+- When you add a new whale wallet, you immediately get copies of their existing trades (if the price is still good)
+- When switching from paper to live (or vice versa), any un-copied whale positions are picked up
+
+#### Slippage Modes
+
+**`relative`** (default, recommended):
+
+- Copies if `current_price ≤ whale_entry_price + threshold`
+- If the price went DOWN (cheaper than the whale's entry), it **always** copies — you're getting a better deal
+- If the price went UP, it only copies if it hasn't risen more than the threshold
+- Example: whale bought at 40¢, threshold 8¢ → copies at any price ≤ 48¢
+
+**`absolute`**:
+
+- Copies if `|current_price - whale_entry_price| ≤ threshold`
+- Works in both directions — rejects if the price moved too far either way
+- Example: whale bought at 40¢, threshold 8¢ → copies only between 32¢–48¢
+
+#### Idempotency
+
+Catchup positions are tagged with a synthetic ID (`catchup:<wallet>:<token>`) in the ProcessedSignals collection. This ensures the bot never re-opens the same catchup trade on subsequent restarts or mode switches.
+
+## Deploy to VPS (Ubuntu)
+
+For production deployment on a VPS (tested on Hetzner Ubuntu 24.04):
+
+### Quick Setup (automated)
+
+```bash
+# On your VPS:
+# 1. Download and run the setup script
+curl -O https://raw.githubusercontent.com/KaalaAadmi/poly-copy-bot/main/setup.sh
+chmod +x setup.sh
+./setup.sh
+
+# 2. Edit .env with your credentials
+nano ~/poly-bot/.env
+
+# 3. Restart the bot
+pm2 restart poly-bot
+```
+
+### Manual Setup
+
+```bash
+# Install Node.js 20 LTS
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Install pm2 (process manager)
+sudo npm install -g pm2
+
+# Clone, install, build
+git clone <your-repo-url> ~/poly-bot
+cd ~/poly-bot
+npm install
+npm run build
+
+# Create .env
+cp .env.example .env
+nano .env  # fill in your credentials
+
+# Start with pm2
+pm2 start dist/index.js --name poly-bot
+pm2 startup   # follow the printed command
+pm2 save
+```
+
+### Useful pm2 Commands
+
+```bash
+pm2 logs poly-bot       # live logs
+pm2 status              # check status
+pm2 restart poly-bot    # restart bot
+pm2 stop poly-bot       # stop bot
+```
+
+### Updating
+
+```bash
+cd ~/poly-bot && git pull && npm install && npm run build && pm2 restart poly-bot
+```
 
 ## Project Structure
 
@@ -188,7 +285,9 @@ src/
 │   ├── poller.ts         # Wallet activity poller
 │   ├── riskEngine.ts     # Risk & execution engine
 │   ├── liveTrader.ts     # Authenticated CLOB SDK client
+│   ├── catchupService.ts # Catchup scan for existing whale positions
 │   └── marketResolver.ts # WebSocket + polling market resolution
 └── utils/
     └── logger.ts         # Winston logger
+setup.sh                  # VPS deployment script (Ubuntu)
 ```

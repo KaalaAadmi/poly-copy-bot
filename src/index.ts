@@ -5,6 +5,7 @@ import { marketResolver } from "./services/marketResolver.js";
 import { scheduleDailyReset } from "./cron/dailyReset.js";
 import { riskEngine } from "./services/riskEngine.js";
 import { liveTrader } from "./services/liveTrader.js";
+import { catchupService } from "./services/catchupService.js";
 import { config } from "./config.js";
 import { logger } from "./utils/logger.js";
 
@@ -16,9 +17,10 @@ import { logger } from "./utils/logger.js";
  *   2. Initialise SystemState (if first run)
  *   3. Optionally init live trader if key is configured & mode is live
  *   4. Launch Telegram bot
- *   5. Start the Poller (wallet tracker)
- *   6. Start the Market Resolver (WebSocket + polling)
- *   7. Schedule midnight daily-balance reset
+ *   5. Run catchup scan (copy existing whale positions)
+ *   6. Start the Poller (wallet tracker)
+ *   7. Start the Market Resolver (WebSocket + polling)
+ *   8. Schedule midnight daily-balance reset
  */
 async function main(): Promise<void> {
   logger.info("========================================");
@@ -44,13 +46,22 @@ async function main(): Promise<void> {
   // 4. Telegram
   await telegramBot.launch();
 
-  // 5. Poller
+  // 5. Catchup – scan tracked wallets and copy eligible positions
+  //    (runs after Telegram is up so notifications are delivered)
+  catchupService.setAlertCallback((msg) => telegramBot.sendAlert(msg));
+  try {
+    await catchupService.catchupAll();
+  } catch (err) {
+    logger.error(`Catchup scan failed on startup: ${err}`);
+  }
+
+  // 6. Poller
   poller.start();
 
-  // 6. Market Resolver
+  // 7. Market Resolver
   marketResolver.start();
 
-  // 7. Cron
+  // 8. Cron
   scheduleDailyReset();
 
   logger.info("All systems online ✅");

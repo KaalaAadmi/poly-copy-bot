@@ -6,4 +6,5 @@ export {
   IPaperTrade,
   TradeStatus,
   TradeDirection,
+  TradeType,
 } from "./PaperTrade.js";

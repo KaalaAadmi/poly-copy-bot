@@ -5,7 +5,11 @@ function uuidv4(): string {
 }
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
-import { SystemState, ProcessedSignal, PaperTrade } from "../db/models/index.js";
+import {
+  SystemState,
+  ProcessedSignal,
+  PaperTrade,
+} from "../db/models/index.js";
 import { polymarketApi, UserActivity, GammaMarket } from "./polymarketApi.js";
 import { liveTrader } from "./liveTrader.js";
 
@@ -158,6 +162,7 @@ export class RiskEngine {
       market_slug: slug,
       question,
       direction,
+      trade_type: "copy",
       paper_investment_amount: investmentAmount,
       num_shares: numShares,
       entry_price: currentPrice,
@@ -191,7 +196,7 @@ export class RiskEngine {
     // Notify via Telegram
     const modeLabel = isLive ? "🔴 LIVE" : "📝 PAPER";
     const notif =
-      `🐋 New Trade Opened! [${modeLabel}]\n` +
+      `� <b>Copy Trade Opened!</b> [${modeLabel}]\n` +
       `─────────────────────\n` +
       `📌 Market: ${question}\n` +
       `🎯 Direction: ${direction}\n` +
@@ -328,9 +333,10 @@ export class RiskEngine {
 
     const emoji = won ? "✅" : "❌";
     const modeLabel = isLive ? "🔴 LIVE" : "📝 PAPER";
+    const typeLabel = trade.trade_type === "catchup" ? "🔄 Catchup" : "📋 Copy";
     const pnlSign = trade.pnl >= 0 ? "+" : "";
     const msg =
-      `${emoji} <b>Trade Resolved – ${won ? "WON" : "LOST"}</b> [${modeLabel}]\n` +
+      `${emoji} <b>Trade Resolved – ${won ? "WON" : "LOST"}</b> [${modeLabel}] [${typeLabel}]\n` +
       `─────────────────────\n` +
       `📌 Market: ${trade.question}\n` +
       `🎯 Direction: ${trade.direction}\n` +

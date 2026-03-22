@@ -29,4 +29,14 @@ export const config = {
   clobWsUrl:
     process.env.CLOB_WS_URL ||
     "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+
+  // Catchup – copy existing whale positions on startup / mode switch / wallet add
+  catchupEnabled:
+    (process.env.CATCHUP_ENABLED || "true").toLowerCase() === "true",
+  catchupMaxSlippage: parseFloat(process.env.CATCHUP_MAX_SLIPPAGE || "0.08"),
+  // Mode: "absolute" = |current_price - whale_entry_price| ≤ threshold
+  //        "relative" = current_price ≤ whale_entry_price + threshold  (only if price went UP)
+  catchupMode: (process.env.CATCHUP_MODE || "relative") as
+    | "absolute"
+    | "relative",
 };

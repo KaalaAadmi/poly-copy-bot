@@ -2,6 +2,7 @@ import mongoose, { Schema, Document } from "mongoose";
 
 export type TradeStatus = "Open" | "Resolved_Won" | "Resolved_Lost";
 export type TradeDirection = "Yes" | "No";
+export type TradeType = "copy" | "catchup";
 
 export interface IPaperTrade extends Document {
   internal_trade_id: string;
@@ -10,6 +11,7 @@ export interface IPaperTrade extends Document {
   market_slug: string;
   question: string;
   direction: TradeDirection;
+  trade_type: TradeType;
   paper_investment_amount: number;
   num_shares: number;
   entry_price: number;
@@ -35,6 +37,11 @@ const PaperTradeSchema = new Schema<IPaperTrade>(
       type: String,
       enum: ["Yes", "No"],
       required: true,
+    },
+    trade_type: {
+      type: String,
+      enum: ["copy", "catchup"],
+      default: "copy",
     },
     paper_investment_amount: { type: Number, required: true },
     num_shares: { type: Number, required: true },

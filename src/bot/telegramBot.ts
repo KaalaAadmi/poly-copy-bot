@@ -9,6 +9,7 @@ import {
 } from "../db/models/index.js";
 import { riskEngine } from "../services/riskEngine.js";
 import { liveTrader } from "../services/liveTrader.js";
+import { catchupService } from "../services/catchupService.js";
 
 /**
  * Telegram Bot – The sole user interface.
@@ -38,6 +39,9 @@ export class TelegramBot {
   async launch(): Promise<void> {
     // Wire up the Telegram alert callback in the Risk Engine
     riskEngine.setAlertCallback((msg) => this.sendAlert(msg));
+
+    // Wire up the Telegram alert callback in the Catchup Service
+    catchupService.setAlertCallback((msg) => this.sendAlert(msg));
 
     await this.bot.launch();
     logger.info("Telegram bot launched (long-polling)");
@@ -325,6 +329,20 @@ export class TelegramBot {
         parse_mode: "HTML",
       });
       logger.info(`Added wallet: ${address}`);
+
+      // Run catchup scan for the newly added wallet
+      try {
+        const { copied, skipped } = await catchupService.catchupWallet(
+          address.toLowerCase(),
+        );
+        if (copied > 0 || skipped > 0) {
+          await ctx.reply(
+            `🔄 Catchup complete for new wallet: ${copied} trade(s) copied, ${skipped} skipped.`,
+          );
+        }
+      } catch (err) {
+        logger.error(`Catchup on /addwallet failed: ${err}`);
+      }
     } catch (err) {
       logger.error(`/addwallet error: ${err}`);
       await ctx.reply("❌ Error adding wallet.");
@@ -446,6 +464,13 @@ export class TelegramBot {
         { parse_mode: "HTML" },
       );
       logger.info("Switched to LIVE trading mode");
+
+      // Run catchup scan – copy eligible whale positions as live trades
+      try {
+        await catchupService.catchupAll();
+      } catch (err) {
+        logger.error(`Catchup on /golive failed: ${err}`);
+      }
     } catch (err) {
       logger.error(`/golive error: ${err}`);
       await ctx.reply("❌ Failed to enable live trading. Check logs.");
@@ -475,6 +500,13 @@ export class TelegramBot {
         { parse_mode: "HTML" },
       );
       logger.info("Switched to PAPER trading mode");
+
+      // Run catchup scan – copy eligible whale positions as paper trades
+      try {
+        await catchupService.catchupAll();
+      } catch (err) {
+        logger.error(`Catchup on /gopaper failed: ${err}`);
+      }
     } catch (err) {
       logger.error(`/gopaper error: ${err}`);
       await ctx.reply("❌ Error switching to paper mode.");
