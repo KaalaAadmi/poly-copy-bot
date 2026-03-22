@@ -44,7 +44,7 @@ fi
 
 # ── 4. Clone or update repo ──
 echo ""
-REPO_DIR="$HOME/poly-bot"
+REPO_DIR="$HOME/projects/poly-copy-bot"
 
 if [ -d "$REPO_DIR" ]; then
     echo "▶ Repo directory exists — pulling latest..."
