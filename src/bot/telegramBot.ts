@@ -44,10 +44,17 @@ export class TelegramBot {
     catchupService.setAlertCallback((msg) => this.sendAlert(msg));
 
     logger.info("Telegraf: calling bot.launch()…");
-    await this.bot.launch({
+
+    // IMPORTANT: Telegraf v4's bot.launch() returns a promise that resolves
+    // only when the bot STOPS, not when it starts. We must NOT await it,
+    // otherwise the entire boot sequence blocks forever.
+    this.bot.launch({
       dropPendingUpdates: true, // Don't process old messages on restart
     });
-    logger.info("Telegraf: bot.launch() resolved – long-polling active");
+
+    // Give Telegraf a moment to set up the long-polling connection
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    logger.info("Telegraf: long-polling started");
 
     process.once("SIGINT", () => this.bot.stop("SIGINT"));
     process.once("SIGTERM", () => this.bot.stop("SIGTERM"));

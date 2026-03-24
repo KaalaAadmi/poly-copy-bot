@@ -35,10 +35,17 @@ export interface UserActivity {
   conditionId: string;
   asset: string; // token ID
   side: string; // "BUY" | "SELL"
-  size: string;
-  price: string;
+  size: number | string;
+  price: number | string;
+  usdcSize?: number | string;
   timestamp: number;
   transactionHash: string;
+  proxyWallet?: string;
+  outcomeIndex?: number;
+  title?: string;
+  slug?: string;
+  eventSlug?: string;
+  outcome?: string;
   [key: string]: unknown;
 }
 
@@ -197,38 +204,37 @@ export class PolymarketAPI {
 
   // ===== Data API (User Activity / Positions) =====
 
+  /** Track whether we've logged a successful /activity call (to reduce noise). */
+  private activityLoggedOnce = false;
+  /** Track whether we've logged a successful /positions call (to reduce noise). */
+  private positionsLoggedOnce = false;
+
   /**
    * Fetch recent trading activity for a wallet address.
    * This is the core method the Poller uses to detect whale trades.
    */
   async getUserActivity(walletAddress: string): Promise<UserActivity[]> {
     try {
-      const url = `/activity`;
-      logger.info(
-        `API → GET ${config.dataApiUrl}${url}?user=${walletAddress.slice(0, 10)}…`,
-      );
-
-      const resp = await this.data.get(url, {
+      const resp = await this.data.get("/activity", {
         params: { user: walletAddress.toLowerCase() },
       });
-
-      logger.info(
-        `API ← /activity status=${resp.status}, ` +
-          `type=${typeof resp.data}, isArray=${Array.isArray(resp.data)}, ` +
-          `length=${Array.isArray(resp.data) ? resp.data.length : "N/A"}`,
-      );
-
-      // Log a sample of what we got back (first 300 chars)
-      if (resp.data && !Array.isArray(resp.data)) {
-        logger.info(
-          `API ← /activity body sample: ${JSON.stringify(resp.data).slice(0, 300)}`,
-        );
-      }
 
       // The API may return the data at different paths
       const activities: UserActivity[] = Array.isArray(resp.data)
         ? resp.data
         : (resp.data?.history ?? resp.data?.data ?? []);
+
+      // Log detailed response info only on the first successful call
+      if (!this.activityLoggedOnce && activities.length > 0) {
+        this.activityLoggedOnce = true;
+        logger.info(
+          `API /activity first success: status=${resp.status}, count=${activities.length}, ` +
+            `keys=[${Object.keys(activities[0]).join(", ")}]`,
+        );
+        logger.info(
+          `API /activity sample: ${JSON.stringify(activities[0]).slice(0, 500)}`,
+        );
+      }
 
       return activities;
     } catch (err) {
@@ -259,12 +265,7 @@ export class PolymarketAPI {
     walletAddress: string,
   ): Promise<Record<string, unknown>[]> {
     try {
-      const url = `/positions`;
-      logger.info(
-        `API → GET ${config.dataApiUrl}${url}?user=${walletAddress.slice(0, 10)}…`,
-      );
-
-      const resp = await this.data.get(url, {
+      const resp = await this.data.get("/positions", {
         params: { user: walletAddress.toLowerCase() },
       });
 
@@ -272,17 +273,15 @@ export class PolymarketAPI {
         ? resp.data
         : (resp.data?.positions ?? []);
 
-      logger.info(
-        `API ← /positions status=${resp.status}, count=${positions.length}`,
-      );
-
-      // Log sample position keys on first non-empty response
-      if (positions.length > 0) {
+      // Log detailed response info only on the first successful call
+      if (!this.positionsLoggedOnce && positions.length > 0) {
+        this.positionsLoggedOnce = true;
         logger.info(
-          `API ← /positions sample keys: ${Object.keys(positions[0]).join(", ")}`,
+          `API /positions first success: status=${resp.status}, count=${positions.length}, ` +
+            `keys=[${Object.keys(positions[0]).join(", ")}]`,
         );
         logger.info(
-          `API ← /positions sample: ${JSON.stringify(positions[0]).slice(0, 400)}`,
+          `API /positions sample: ${JSON.stringify(positions[0]).slice(0, 500)}`,
         );
       }
 
@@ -320,13 +319,8 @@ export class PolymarketAPI {
 
     // Test CLOB API
     try {
-      const resp = await this.clob.get("/midpoint", {
-        params: {
-          token_id:
-            "71321045679252212594626385532706912750332728571942532289631379312455583992563",
-        },
-      });
-      results.push(`CLOB API: ✅ (midpoint=${resp.data?.mid ?? "?"})`);
+      const resp = await this.clob.get("/time");
+      results.push(`CLOB API: ✅ (server_time=${resp.data})`);
     } catch (err) {
       results.push(`CLOB API: ❌ (${err})`);
     }
