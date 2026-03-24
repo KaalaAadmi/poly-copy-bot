@@ -162,6 +162,12 @@ export class PolymarketAPI {
       const data = resp.data as ClobMidpoint;
       return data.mid ? parseFloat(data.mid) : null;
     } catch (err) {
+      const axiosErr = err as { response?: { status?: number } };
+      // 404 = no orderbook (resolved/expired market) — totally expected, don't spam logs
+      if (axiosErr.response?.status === 404) {
+        logger.debug(`No orderbook for midpoint token ${tokenId.slice(0, 16)}… (404)`);
+        return null;
+      }
       logger.error(`Error fetching midpoint for token ${tokenId}: ${err}`);
       return null;
     }
@@ -178,6 +184,12 @@ export class PolymarketAPI {
       const data = resp.data as ClobPrice;
       return data.price ? parseFloat(data.price) : null;
     } catch (err) {
+      const axiosErr = err as { response?: { status?: number } };
+      // 404 = no orderbook (resolved/expired market) — totally expected, don't spam logs
+      if (axiosErr.response?.status === 404) {
+        logger.debug(`No orderbook for price token ${tokenId.slice(0, 16)}… (404)`);
+        return null;
+      }
       logger.error(`Error fetching price for token ${tokenId}: ${err}`);
       return null;
     }

@@ -105,17 +105,50 @@ export class CatchupService {
     let copied = 0;
     let skipped = 0;
 
-    const positions = await polymarketApi.getUserPositions(walletAddress);
-    if (!positions || positions.length === 0) {
+    const allPositions = await polymarketApi.getUserPositions(walletAddress);
+    if (!allPositions || allPositions.length === 0) {
       logger.info(
         `Catchup: no positions found for ${walletAddress.slice(0, 8)}…`,
       );
       return { copied, skipped };
     }
 
+    // Pre-filter: skip resolved/redeemable/mergeable/expired positions to
+    // avoid hammering the CLOB API with 404s for dead markets.
+    const positions = allPositions.filter((pos) => {
+      const curPrice = parseFloat(String(pos.curPrice ?? "-1"));
+      if (Boolean(pos.redeemable) || Boolean(pos.mergeable) || curPrice === 0) {
+        return false;
+      }
+      if (pos.endDate) {
+        const endDate = new Date(String(pos.endDate));
+        if (!isNaN(endDate.getTime()) && endDate.getTime() < Date.now()) {
+          return false;
+        }
+      }
+      const size = parseFloat(String(pos.size || "0"));
+      return size > 0;
+    });
+
+    const filtered = allPositions.length - positions.length;
     logger.info(
-      `Catchup: found ${positions.length} position(s) for ${walletAddress.slice(0, 8)}…`,
+      `Catchup: found ${allPositions.length} position(s) for ${walletAddress.slice(0, 8)}… ` +
+        `(${filtered} resolved/expired filtered out, ${positions.length} active to evaluate)`,
     );
+
+    // Bulk-mark filtered positions as processed so we don't re-check them
+    if (filtered > 0) {
+      const filteredOnes = allPositions.filter((p) => !positions.includes(p));
+      for (const pos of filteredOnes) {
+        const tokenId = String(pos.asset || pos.asset_id || pos.token_id || "");
+        if (tokenId) {
+          await this.markProcessed(
+            `catchup:${walletAddress.toLowerCase()}:${tokenId}`,
+            walletAddress,
+          );
+        }
+      }
+    }
 
     for (const pos of positions) {
       try {
@@ -153,9 +186,41 @@ export class CatchupService {
       pos.conditionId || pos.condition_id || pos.market || "",
     );
     const outcome = String(pos.outcome || "");
+    const curPrice = parseFloat(String(pos.curPrice ?? "-1"));
+    const redeemable = Boolean(pos.redeemable);
+    const mergeable = Boolean(pos.mergeable);
 
     // Skip empty / zero positions
     if (!tokenId || size <= 0) return "skipped";
+
+    // Skip resolved / expired positions – the Data API tells us via
+    // curPrice=0, redeemable=true, or mergeable=true. Hitting the CLOB
+    // for these just produces 404 errors.
+    if (redeemable || mergeable || curPrice === 0) {
+      logger.debug(
+        `Catchup: position ${tokenId.slice(0, 12)}… is resolved/redeemable – skipping`,
+      );
+      await this.markProcessed(
+        `catchup:${walletAddress.toLowerCase()}:${tokenId}`,
+        walletAddress,
+      );
+      return "skipped";
+    }
+
+    // Skip positions whose end date is already in the past
+    if (pos.endDate) {
+      const endDate = new Date(String(pos.endDate));
+      if (!isNaN(endDate.getTime()) && endDate.getTime() < Date.now()) {
+        logger.debug(
+          `Catchup: position ${tokenId.slice(0, 12)}… market ended ${endDate.toISOString()} – skipping`,
+        );
+        await this.markProcessed(
+          `catchup:${walletAddress.toLowerCase()}:${tokenId}`,
+          walletAddress,
+        );
+        return "skipped";
+      }
+    }
 
     // Idempotency: build a synthetic ID for this catchup position
     // Format: "catchup:<wallet>:<tokenId>" — unique per wallet+token combo
