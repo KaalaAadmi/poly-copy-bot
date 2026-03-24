@@ -119,8 +119,23 @@ export class RiskEngine {
     this.insufficientBalanceNotified = false;
     this.exposureLimitNotified = false;
 
-    // 4. Execution – fetch *current* market price from CLOB
+    // 3b. Duplicate position guard – don't open a second trade on the
+    // same token if we already have one open.
     const tokenId = activity.asset;
+    const existingOpen = await PaperTrade.findOne({
+      token_id: tokenId,
+      status: "Open",
+    });
+    if (existingOpen) {
+      logger.info(
+        `Signal ${tradeId}: already have open trade ${existingOpen.internal_trade_id.slice(0, 8)} ` +
+          `on token ${tokenId.slice(0, 12)}… – skipping duplicate`,
+      );
+      await this.markProcessed(tradeId, walletAddress);
+      return;
+    }
+
+    // 4. Execution – fetch *current* market price from CLOB
     const direction = this.inferDirection(activity);
     let currentPrice = await polymarketApi.getMidpointPrice(tokenId);
     if (currentPrice === null) {

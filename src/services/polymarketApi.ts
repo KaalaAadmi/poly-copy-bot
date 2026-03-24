@@ -26,6 +26,7 @@ export interface GammaMarket {
   enableOrderBook: boolean;
   neg_risk: boolean;
   minimum_tick_size: string;
+  umaResolutionStatus?: string; // "resolved", "proposed", etc.
   [key: string]: unknown;
 }
 

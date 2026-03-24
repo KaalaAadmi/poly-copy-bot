@@ -205,10 +205,14 @@ export class MarketResolver {
             await polymarketApi.getMarketByConditionId(conditionId);
           if (!market) continue;
 
-          // Market not yet resolved
+          // ── Only resolve when the market is truly resolved ──
+          // `closed` alone means trading is halted; the resolution may
+          // still be pending.  We require BOTH closed AND either:
+          //   • umaResolutionStatus === "resolved", OR
+          //   • outcomePrices shows a clear 1/0 split
           if (!market.closed) continue;
 
-          // Parse outcome prices – a resolved market should have 1.0 / 0.0
+          // Parse outcome prices
           let outcomePrices: number[] = [];
           try {
             outcomePrices = JSON.parse(market.outcomePrices).map(Number);
@@ -223,16 +227,50 @@ export class MarketResolver {
             continue;
           }
 
-          // Find which outcome won (price = 1)
+          // Check if the market is actually resolved (not just closed)
+          const resolutionStatus = market.umaResolutionStatus ?? "";
+          const hasResolved = resolutionStatus.toLowerCase() === "resolved";
+
+          // Find which outcome won (price = 1 or very close to 1)
           const winningIndex = outcomePrices.findIndex(
             (p: number) => p >= 0.99,
           );
-          const winningTokenId =
-            winningIndex >= 0 ? clobTokenIds[winningIndex] : null;
+          const losingIndex = outcomePrices.findIndex((p: number) => p <= 0.01);
+
+          // Only proceed if we have a definitive resolution:
+          //   1. The market says "resolved" explicitly, OR
+          //   2. The prices clearly show a 1/0 split (one ≥0.99 AND one ≤0.01)
+          if (!hasResolved && winningIndex < 0) {
+            logger.debug(
+              `MarketResolver: condition ${conditionId.slice(0, 12)}… is closed ` +
+                `but not resolved (status="${resolutionStatus}", ` +
+                `prices=[${outcomePrices.join(",")}]) – waiting`,
+            );
+            continue;
+          }
+
+          // If status says resolved but prices don't show a clear winner
+          // (e.g. [0, 0] for old markets), skip to avoid incorrect resolution
+          if (winningIndex < 0) {
+            logger.warn(
+              `MarketResolver: condition ${conditionId.slice(0, 12)}… marked ` +
+                `resolved but no winning outcome found ` +
+                `(prices=[${outcomePrices.join(",")}]) – skipping`,
+            );
+            continue;
+          }
+
+          const winningTokenId = clobTokenIds[winningIndex] ?? null;
 
           // Resolve all trades for this condition
           const conditionTrades = openTrades.filter(
             (t: IPaperTrade) => t.condition_id === conditionId,
+          );
+
+          logger.info(
+            `MarketResolver: resolving ${conditionTrades.length} trade(s) ` +
+              `for condition ${conditionId.slice(0, 12)}… ` +
+              `(winner: token index ${winningIndex}, status="${resolutionStatus}")`,
           );
 
           for (const trade of conditionTrades) {

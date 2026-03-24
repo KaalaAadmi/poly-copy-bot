@@ -234,10 +234,11 @@ export class CatchupService {
       return "already_processed";
     }
 
-    // Also check if we already have an open trade for this exact token
+    // Also check if we already have ANY trade for this exact token
+    // (open or resolved). This prevents re-opening a position that was
+    // already copy-traded and subsequently resolved.
     const existingTrade = await PaperTrade.findOne({
       token_id: tokenId,
-      status: "Open",
     });
     if (existingTrade) {
       // Mark as processed so we don't re-check
