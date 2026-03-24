@@ -203,9 +203,27 @@ export class PolymarketAPI {
    */
   async getUserActivity(walletAddress: string): Promise<UserActivity[]> {
     try {
-      const resp = await this.data.get("/activity", {
+      const url = `/activity`;
+      logger.info(
+        `API → GET ${config.dataApiUrl}${url}?user=${walletAddress.slice(0, 10)}…`,
+      );
+
+      const resp = await this.data.get(url, {
         params: { user: walletAddress.toLowerCase() },
       });
+
+      logger.info(
+        `API ← /activity status=${resp.status}, ` +
+          `type=${typeof resp.data}, isArray=${Array.isArray(resp.data)}, ` +
+          `length=${Array.isArray(resp.data) ? resp.data.length : "N/A"}`,
+      );
+
+      // Log a sample of what we got back (first 300 chars)
+      if (resp.data && !Array.isArray(resp.data)) {
+        logger.info(
+          `API ← /activity body sample: ${JSON.stringify(resp.data).slice(0, 300)}`,
+        );
+      }
 
       // The API may return the data at different paths
       const activities: UserActivity[] = Array.isArray(resp.data)
@@ -215,14 +233,21 @@ export class PolymarketAPI {
       return activities;
     } catch (err) {
       // Handle rate limiting gracefully
-      const axiosErr = err as { response?: { status?: number } };
+      const axiosErr = err as {
+        response?: { status?: number; data?: unknown };
+      };
       if (axiosErr.response?.status === 429) {
         logger.warn(
           `Rate limited while fetching activity for ${walletAddress}. Will retry next cycle.`,
         );
         return [];
       }
-      logger.error(`Error fetching activity for ${walletAddress}: ${err}`);
+      logger.error(
+        `Error fetching activity for ${walletAddress}: ${err}` +
+          (axiosErr.response
+            ? ` (status=${axiosErr.response.status}, body=${JSON.stringify(axiosErr.response.data).slice(0, 200)})`
+            : ""),
+      );
       return [];
     }
   }
@@ -234,18 +259,95 @@ export class PolymarketAPI {
     walletAddress: string,
   ): Promise<Record<string, unknown>[]> {
     try {
-      const resp = await this.data.get("/positions", {
+      const url = `/positions`;
+      logger.info(
+        `API → GET ${config.dataApiUrl}${url}?user=${walletAddress.slice(0, 10)}…`,
+      );
+
+      const resp = await this.data.get(url, {
         params: { user: walletAddress.toLowerCase() },
       });
-      return Array.isArray(resp.data)
+
+      const positions = Array.isArray(resp.data)
         ? resp.data
         : (resp.data?.positions ?? []);
+
+      logger.info(
+        `API ← /positions status=${resp.status}, count=${positions.length}`,
+      );
+
+      // Log sample position keys on first non-empty response
+      if (positions.length > 0) {
+        logger.info(
+          `API ← /positions sample keys: ${Object.keys(positions[0]).join(", ")}`,
+        );
+        logger.info(
+          `API ← /positions sample: ${JSON.stringify(positions[0]).slice(0, 400)}`,
+        );
+      }
+
+      return positions;
     } catch (err) {
-      logger.error(`Error fetching positions for ${walletAddress}: ${err}`);
+      const axiosErr = err as {
+        response?: { status?: number; data?: unknown };
+      };
+      logger.error(
+        `Error fetching positions for ${walletAddress}: ${err}` +
+          (axiosErr.response
+            ? ` (status=${axiosErr.response.status}, body=${JSON.stringify(axiosErr.response.data).slice(0, 200)})`
+            : ""),
+      );
       return [];
     }
   }
+  /**
+   * Quick connectivity test – try hitting the Gamma API and CLOB API.
+   * Returns a summary string for startup diagnostics.
+   */
+  async connectivityTest(): Promise<string> {
+    const results: string[] = [];
+
+    // Test Gamma API
+    try {
+      const resp = await this.gamma.get("/markets", {
+        params: { limit: 1, active: true },
+      });
+      const markets = Array.isArray(resp.data) ? resp.data : [];
+      results.push(`Gamma API: ✅ (${markets.length} market(s))`);
+    } catch (err) {
+      results.push(`Gamma API: ❌ (${err})`);
+    }
+
+    // Test CLOB API
+    try {
+      const resp = await this.clob.get("/midpoint", {
+        params: {
+          token_id:
+            "71321045679252212594626385532706912750332728571942532289631379312455583992563",
+        },
+      });
+      results.push(`CLOB API: ✅ (midpoint=${resp.data?.mid ?? "?"})`);
+    } catch (err) {
+      results.push(`CLOB API: ❌ (${err})`);
+    }
+
+    // Test Data API
+    try {
+      const resp = await this.data.get("/activity", {
+        params: { user: "0x0000000000000000000000000000000000000000" },
+      });
+      results.push(
+        `Data API: ✅ (status=${resp.status}, isArray=${Array.isArray(resp.data)})`,
+      );
+    } catch (err) {
+      const axiosErr = err as { response?: { status?: number } };
+      results.push(
+        `Data API: ❌ (status=${axiosErr.response?.status ?? "?"}, ${err})`,
+      );
+    }
+
+    return results.join("\n  ");
+  }
 }
 
-// Singleton instance
 export const polymarketApi = new PolymarketAPI();

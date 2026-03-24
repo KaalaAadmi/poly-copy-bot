@@ -18,7 +18,10 @@ export const logger = winston.createLogger({
     }),
   ),
   transports: [
-    new winston.transports.Console(),
+    new winston.transports.Console({
+      // Send error/warn to stderr so pm2 captures them in error log
+      stderrLevels: ["error", "warn"],
+    }),
     new winston.transports.File({
       filename: "poly-bot-error.log",
       level: "error",

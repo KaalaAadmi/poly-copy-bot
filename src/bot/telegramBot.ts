@@ -43,8 +43,11 @@ export class TelegramBot {
     // Wire up the Telegram alert callback in the Catchup Service
     catchupService.setAlertCallback((msg) => this.sendAlert(msg));
 
-    await this.bot.launch();
-    logger.info("Telegram bot launched (long-polling)");
+    logger.info("Telegraf: calling bot.launch()…");
+    await this.bot.launch({
+      dropPendingUpdates: true, // Don't process old messages on restart
+    });
+    logger.info("Telegraf: bot.launch() resolved – long-polling active");
 
     process.once("SIGINT", () => this.bot.stop("SIGINT"));
     process.once("SIGTERM", () => this.bot.stop("SIGTERM"));

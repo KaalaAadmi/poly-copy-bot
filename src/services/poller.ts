@@ -36,8 +36,8 @@ export class Poller {
     logger.info(`Starting Poller – interval ${config.pollIntervalMs / 1000}s`);
 
     // Immediate first poll, then repeating
-    this.poll();
-    this.interval = setInterval(() => this.poll(), config.pollIntervalMs);
+    void this.poll();
+    this.interval = setInterval(() => void this.poll(), config.pollIntervalMs);
   }
 
   /**
@@ -66,11 +66,13 @@ export class Poller {
       const wallets = await TrackedWallet.find({ active_status: true });
 
       if (wallets.length === 0) {
-        logger.debug("No wallets to track");
+        logger.info(
+          "Poller: no active wallets to track (add one with /addwallet)",
+        );
         return;
       }
 
-      logger.debug(`Polling ${wallets.length} wallet(s)…`);
+      logger.info(`Poller: polling ${wallets.length} wallet(s)…`);
 
       for (const wallet of wallets) {
         try {
@@ -95,7 +97,21 @@ export class Poller {
   private async pollWallet(address: string): Promise<void> {
     const activities = await polymarketApi.getUserActivity(address);
 
+    logger.info(
+      `Poller [${address.slice(0, 8)}…]: API returned ${activities?.length ?? 0} activity item(s)`,
+    );
+
     if (!activities || activities.length === 0) return;
+
+    // Log the first activity for debugging API response shape
+    if (activities.length > 0 && !this.highWaterMarks.has(address)) {
+      logger.info(
+        `Poller [${address.slice(0, 8)}…]: sample activity keys: ${Object.keys(activities[0]).join(", ")}`,
+      );
+      logger.info(
+        `Poller [${address.slice(0, 8)}…]: sample activity: ${JSON.stringify(activities[0]).slice(0, 500)}`,
+      );
+    }
 
     // Filter to only TRADE-type activities
     const trades = activities.filter(
@@ -105,16 +121,46 @@ export class Poller {
         (a.type || "").toUpperCase() === "SELL",
     );
 
-    if (trades.length === 0) return;
+    logger.info(
+      `Poller [${address.slice(0, 8)}…]: ${trades.length} trade-type activity(ies) out of ${activities.length}`,
+    );
+
+    if (trades.length === 0) {
+      // Log all types we received to help debug
+      const types = [...new Set(activities.map((a) => a.type || "undefined"))];
+      logger.info(
+        `Poller [${address.slice(0, 8)}…]: non-trade activity types seen: ${types.join(", ")}`,
+      );
+      return;
+    }
 
     const hwm = this.highWaterMarks.get(address) || 0;
+    const isFirstPoll = hwm === 0;
 
     // Sort by timestamp ascending so we process oldest first
     const newTrades = trades
       .filter((t) => (t.timestamp || 0) > hwm)
       .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
-    if (newTrades.length === 0) return;
+    if (newTrades.length === 0) {
+      logger.debug(
+        `Poller [${address.slice(0, 8)}…]: 0 new trades above HWM ${hwm}`,
+      );
+      return;
+    }
+
+    // On the FIRST poll for this wallet, we only set the high-water mark to
+    // "catch up" with history. We don't process these as copy signals because
+    // the catchup service handles existing positions separately.
+    if (isFirstPoll) {
+      const latestTs = Math.max(...newTrades.map((t) => t.timestamp || 0));
+      this.highWaterMarks.set(address, latestTs);
+      logger.info(
+        `Poller [${address.slice(0, 8)}…]: first poll – set HWM to ${latestTs} ` +
+          `(skipped ${newTrades.length} historical trade(s))`,
+      );
+      return;
+    }
 
     logger.info(
       `Found ${newTrades.length} new trade(s) from ${address.slice(0, 8)}…`,

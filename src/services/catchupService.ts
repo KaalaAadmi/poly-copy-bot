@@ -46,13 +46,13 @@ export class CatchupService {
    */
   async catchupAll(): Promise<void> {
     if (!config.catchupEnabled) {
-      logger.debug("Catchup is disabled – skipping");
+      logger.info("Catchup is disabled via CATCHUP_ENABLED=false – skipping");
       return;
     }
 
     const wallets = await TrackedWallet.find({ active_status: true });
     if (wallets.length === 0) {
-      logger.debug("Catchup: no wallets to scan");
+      logger.info("Catchup: no active wallets to scan");
       return;
     }
 
@@ -107,7 +107,7 @@ export class CatchupService {
 
     const positions = await polymarketApi.getUserPositions(walletAddress);
     if (!positions || positions.length === 0) {
-      logger.debug(
+      logger.info(
         `Catchup: no positions found for ${walletAddress.slice(0, 8)}…`,
       );
       return { copied, skipped };
