@@ -52,6 +52,11 @@ export class Poller {
   }
 
   /**
+   * Track poll count so we log a heartbeat periodically (not every cycle).
+   */
+  private pollCount = 0;
+
+  /**
    * Single polling cycle.
    */
   private async poll(): Promise<void> {
@@ -72,7 +77,16 @@ export class Poller {
         return;
       }
 
-      logger.info(`Poller: polling ${wallets.length} wallet(s)…`);
+      logger.debug(`Poller: polling ${wallets.length} wallet(s)…`);
+      this.pollCount++;
+
+      // Log a heartbeat every ~5 minutes (25 cycles × 12s = 300s) so
+      // the operator knows the poller is still alive without log spam.
+      if (this.pollCount % 25 === 1) {
+        logger.info(
+          `Poller heartbeat: cycle #${this.pollCount}, tracking ${wallets.length} wallet(s)`,
+        );
+      }
 
       for (const wallet of wallets) {
         try {
@@ -97,7 +111,7 @@ export class Poller {
   private async pollWallet(address: string): Promise<void> {
     const activities = await polymarketApi.getUserActivity(address);
 
-    logger.info(
+    logger.debug(
       `Poller [${address.slice(0, 8)}…]: API returned ${activities?.length ?? 0} activity item(s)`,
     );
 
@@ -121,14 +135,14 @@ export class Poller {
         (a.type || "").toUpperCase() === "SELL",
     );
 
-    logger.info(
+    logger.debug(
       `Poller [${address.slice(0, 8)}…]: ${trades.length} trade-type activity(ies) out of ${activities.length}`,
     );
 
     if (trades.length === 0) {
       // Log all types we received to help debug
       const types = [...new Set(activities.map((a) => a.type || "undefined"))];
-      logger.info(
+      logger.debug(
         `Poller [${address.slice(0, 8)}…]: non-trade activity types seen: ${types.join(", ")}`,
       );
       return;

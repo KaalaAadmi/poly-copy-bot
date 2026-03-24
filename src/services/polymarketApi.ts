@@ -165,7 +165,9 @@ export class PolymarketAPI {
       const axiosErr = err as { response?: { status?: number } };
       // 404 = no orderbook (resolved/expired market) — totally expected, don't spam logs
       if (axiosErr.response?.status === 404) {
-        logger.debug(`No orderbook for midpoint token ${tokenId.slice(0, 16)}… (404)`);
+        logger.debug(
+          `No orderbook for midpoint token ${tokenId.slice(0, 16)}… (404)`,
+        );
         return null;
       }
       logger.error(`Error fetching midpoint for token ${tokenId}: ${err}`);
@@ -187,7 +189,9 @@ export class PolymarketAPI {
       const axiosErr = err as { response?: { status?: number } };
       // 404 = no orderbook (resolved/expired market) — totally expected, don't spam logs
       if (axiosErr.response?.status === 404) {
-        logger.debug(`No orderbook for price token ${tokenId.slice(0, 16)}… (404)`);
+        logger.debug(
+          `No orderbook for price token ${tokenId.slice(0, 16)}… (404)`,
+        );
         return null;
       }
       logger.error(`Error fetching price for token ${tokenId}: ${err}`);

@@ -28,6 +28,20 @@ export class RiskEngine {
   private sendAlert: ((msg: string) => Promise<void>) | null = null;
 
   /**
+   * Tracks whether we've already notified about insufficient balance.
+   * Once set, subsequent "insufficient balance" signals are logged at
+   * debug level only (no Telegram spam). Reset when balance is
+   * replenished via trade resolution or daily reset.
+   */
+  private insufficientBalanceNotified = false;
+
+  /**
+   * Tracks whether we've already notified about daily exposure limit.
+   * Same logic – notify once, then go quiet until the next day.
+   */
+  private exposureLimitNotified = false;
+
+  /**
    * Attach a Telegram alert callback so the engine can send messages.
    */
   setAlertCallback(fn: (msg: string) => Promise<void>): void {
@@ -59,9 +73,16 @@ export class RiskEngine {
     const maxExposure = system.daily_starting_balance * config.dailyMaxExposure;
 
     if (todayExposure >= maxExposure) {
-      const msg = `⚠️ Signal ignored: Daily exposure limit reached.\nDeployed today: $${todayExposure.toFixed(2)} / $${maxExposure.toFixed(2)}`;
-      logger.warn(msg);
-      if (this.sendAlert) await this.sendAlert(msg);
+      if (!this.exposureLimitNotified) {
+        this.exposureLimitNotified = true;
+        const msg = `⚠️ Signal ignored: Daily exposure limit reached.\nDeployed today: $${todayExposure.toFixed(2)} / $${maxExposure.toFixed(2)}\n<i>(Further signals will be logged silently until reset)</i>`;
+        logger.warn(msg);
+        if (this.sendAlert) await this.sendAlert(msg);
+      } else {
+        logger.debug(
+          `Signal ${tradeId} ignored – daily exposure limit (${todayExposure.toFixed(2)} / ${maxExposure.toFixed(2)})`,
+        );
+      }
       // Still mark as processed so we don't re-alert
       await this.markProcessed(tradeId, walletAddress);
       return;
@@ -71,14 +92,32 @@ export class RiskEngine {
     const investmentAmount =
       system.daily_starting_balance * config.positionSizePct;
 
-    // Check we have enough liquid balance
-    if (investmentAmount > system.current_balance) {
-      const msg = `⚠️ Signal ignored: Insufficient balance.\nNeeded: $${investmentAmount.toFixed(2)} | Available: $${system.current_balance.toFixed(2)}`;
-      logger.warn(msg);
-      if (this.sendAlert) await this.sendAlert(msg);
+    // Check we have enough liquid balance (small epsilon to avoid
+    // floating-point edge cases like 2.150000001 > 2.15)
+    if (investmentAmount - system.current_balance > 0.005) {
+      if (!this.insufficientBalanceNotified) {
+        this.insufficientBalanceNotified = true;
+        const openCount = await PaperTrade.countDocuments({ status: "Open" });
+        const msg =
+          `⚠️ Signal ignored: Insufficient balance.\n` +
+          `Needed: $${investmentAmount.toFixed(2)} | Available: $${system.current_balance.toFixed(2)}\n` +
+          `📊 ${openCount} open trade(s) — waiting for resolutions to free up funds.\n` +
+          `<i>(Further signals will be logged silently until balance is replenished)</i>`;
+        logger.warn(msg);
+        if (this.sendAlert) await this.sendAlert(msg);
+      } else {
+        logger.debug(
+          `Signal ${tradeId} ignored – insufficient balance ` +
+            `(need $${investmentAmount.toFixed(2)}, have $${system.current_balance.toFixed(2)})`,
+        );
+      }
       await this.markProcessed(tradeId, walletAddress);
       return;
     }
+
+    // Funds available → reset the suppression flags
+    this.insufficientBalanceNotified = false;
+    this.exposureLimitNotified = false;
 
     // 4. Execution – fetch *current* market price from CLOB
     const tokenId = activity.asset;
@@ -262,6 +301,11 @@ export class RiskEngine {
     state.daily_starting_balance = state.current_balance;
     state.last_daily_reset = new Date();
     await state.save();
+
+    // New day → reset suppression flags
+    this.insufficientBalanceNotified = false;
+    this.exposureLimitNotified = false;
+
     logger.info(
       `Daily balance reset. Starting balance: $${state.daily_starting_balance.toFixed(2)}`,
     );
@@ -330,6 +374,11 @@ export class RiskEngine {
     trade.resolved_at = new Date();
     await trade.save();
     await state.save();
+
+    // Balance changed – reset suppression flags so the next signal
+    // gets a fresh check (and a Telegram alert if still insufficient).
+    this.insufficientBalanceNotified = false;
+    this.exposureLimitNotified = false;
 
     const emoji = won ? "✅" : "❌";
     const modeLabel = isLive ? "🔴 LIVE" : "📝 PAPER";
