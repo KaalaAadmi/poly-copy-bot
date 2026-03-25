@@ -88,6 +88,10 @@ export class PolymarketAPI {
 
   /**
    * Fetch a market by its condition ID.
+   *
+   * IMPORTANT: The Gamma API ignores the condition_id filter when no
+   * match is found and returns an unrelated market (usually id=12).
+   * We MUST verify the returned conditionId matches our query.
    */
   async getMarketByConditionId(
     conditionId: string,
@@ -97,7 +101,22 @@ export class PolymarketAPI {
         params: { condition_id: conditionId, limit: 1 },
       });
       const markets: GammaMarket[] = resp.data;
-      return markets.length > 0 ? markets[0] : null;
+      if (markets.length === 0) return null;
+
+      // Verify the returned market actually matches the requested conditionId.
+      // The Gamma API silently returns unrelated results on a miss.
+      const market = markets[0];
+      if (
+        market.conditionId.toLowerCase() !== conditionId.toLowerCase()
+      ) {
+        logger.debug(
+          `Gamma API returned wrong market for condition ${conditionId.slice(0, 16)}… ` +
+            `(got "${market.question}" with condition ${market.conditionId.slice(0, 16)}…)`,
+        );
+        return null;
+      }
+
+      return market;
     } catch (err) {
       logger.error(
         `Error fetching market for condition ${conditionId}: ${err}`,
@@ -115,7 +134,17 @@ export class PolymarketAPI {
         params: { slug, limit: 1 },
       });
       const markets: GammaMarket[] = resp.data;
-      return markets.length > 0 ? markets[0] : null;
+      if (markets.length === 0) return null;
+
+      // Verify the returned market slug actually matches
+      const market = markets[0];
+      if (market.slug !== slug) {
+        logger.debug(
+          `Gamma API returned wrong market for slug "${slug}" (got "${market.slug}")`,
+        );
+        return null;
+      }
+      return market;
     } catch (err) {
       logger.error(`Error fetching market by slug ${slug}: ${err}`);
       return null;

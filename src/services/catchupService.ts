@@ -186,6 +186,8 @@ export class CatchupService {
       pos.conditionId || pos.condition_id || pos.market || "",
     );
     const outcome = String(pos.outcome || "");
+    const posTitle = String(pos.title || pos.question || "");
+    const posSlug = String(pos.eventSlug || pos.slug || "");
     const curPrice = parseFloat(String(pos.curPrice ?? "-1"));
     const redeemable = Boolean(pos.redeemable);
     const mergeable = Boolean(pos.mergeable);
@@ -292,7 +294,7 @@ export class CatchupService {
 
       if (this.sendAlert) {
         const question =
-          market?.question ?? conditionId?.slice(0, 20) ?? tokenId.slice(0, 12);
+          posTitle || market?.question || conditionId?.slice(0, 20) || tokenId.slice(0, 12);
         await this.sendAlert(
           `⏭ <b>Catchup skipped</b>\n` +
             `📌 ${question}\n` +
@@ -324,6 +326,8 @@ export class CatchupService {
       outcome,
       market,
       syntheticId,
+      posTitle,
+      posSlug,
     );
 
     return "copied";
@@ -342,6 +346,8 @@ export class CatchupService {
     outcome: string,
     market: GammaMarket | null,
     syntheticId: string,
+    posTitle: string,
+    posSlug: string,
   ): Promise<void> {
     const system = await riskEngine.getSystemState();
 
@@ -365,8 +371,9 @@ export class CatchupService {
       return;
     }
 
-    const question = market?.question ?? "Unknown Market";
-    const slug = market?.slug ?? "";
+    // Use Data API position metadata as primary source (Gamma API can return wrong market)
+    const question = posTitle || market?.question || "Unknown Market";
+    const slug = posSlug || market?.slug || "";
     const numShares = investmentAmount / currentPrice;
 
     // Determine direction from outcome field

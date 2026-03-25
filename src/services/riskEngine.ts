@@ -149,23 +149,48 @@ export class RiskEngine {
       return;
     }
 
-    // Look up market metadata from Gamma
-    const market = await this.lookupMarket(activity.conditionId);
-    const question = market?.question ?? "Unknown Market";
-    const slug = market?.slug ?? "";
+    // ── Market metadata ──
+    // The Data API activity already includes title, slug, outcome, eventSlug.
+    // Use those as the PRIMARY source — they're always correct because they
+    // come from the same API that told us about the trade.
+    // The Gamma API lookup is unreliable (returns wrong markets on cache miss).
     const conditionId = activity.conditionId ?? "";
+    let question = activity.title || "";
+    let slug = activity.eventSlug || activity.slug || "";
+
+    // Only fall back to Gamma if the activity didn't include metadata
+    let market: GammaMarket | null = null;
+    if (!question && conditionId) {
+      market = await this.lookupMarket(conditionId);
+      if (market) {
+        question = market.question;
+        slug = market.slug;
+      }
+    } else if (conditionId) {
+      // Still try Gamma for fields we need for live trading (tick_size, neg_risk)
+      // but don't trust it for question/slug
+      market = await this.lookupMarket(conditionId);
+    }
+
+    if (!question) question = "Unknown Market";
+
+    // Build the Polymarket URL — use eventSlug for the event page
+    const marketUrl = slug
+      ? `https://polymarket.com/event/${slug}`
+      : "";
 
     // Notify: whale trade details (what the tracked wallet placed)
+    const outcomeLabel = activity.outcome || direction;
     const whaleNotif =
       `🐋 <b>Whale Trade Detected</b>\n` +
       `─────────────────────\n` +
       `👤 Wallet: <code>${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}</code>\n` +
       `📌 Market: ${question}\n` +
-      `🎯 Side: ${activity.side || "BUY"} ${direction}\n` +
+      `🎯 Side: ${activity.side || "BUY"} ${outcomeLabel}\n` +
       `💲 Whale Price: ${activity.price || "N/A"}\n` +
       `📦 Whale Size: ${activity.size || "N/A"}\n` +
       `🔗 Token: <code>${tokenId.slice(0, 12)}…</code>\n` +
-      (slug ? `🌐 https://polymarket.com/event/${slug}\n` : "") +
+      (marketUrl ? `🌐 ${marketUrl}\n` : "") +
       `⏱ Processing copy-trade…`;
 
     logger.info(
@@ -424,8 +449,13 @@ export class RiskEngine {
   // ──────────────────────────────────────────────────────
 
   private inferDirection(activity: UserActivity): "Yes" | "No" {
-    // The token at index 0 in clobTokenIds is the "Yes" token
-    // If the user is buying, direction matches the side. If selling, it's the opposite.
+    // Use the outcome field from the Data API if available — it tells us
+    // exactly which outcome the whale bought (e.g. "Knicks", "Yes", "Over").
+    // For binary markets, outcomeIndex 0 = Yes, 1 = No.
+    if (activity.outcomeIndex !== undefined) {
+      return activity.outcomeIndex === 0 ? "Yes" : "No";
+    }
+    // Fallback: infer from side
     const side = (activity.side || "BUY").toUpperCase();
     if (side === "BUY") return "Yes";
     return "No";
