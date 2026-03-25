@@ -1,4 +1,4 @@
-import { Telegraf, Context } from "telegraf";
+import { Telegraf, Context, Markup } from "telegraf";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
 import {
@@ -10,6 +10,9 @@ import {
 import { riskEngine } from "../services/riskEngine.js";
 import { liveTrader } from "../services/liveTrader.js";
 import { catchupService } from "../services/catchupService.js";
+
+/** Trades shown per page in /activebets and /history */
+const PAGE_SIZE = 5;
 
 /**
  * Telegram Bot – The sole user interface.
@@ -102,6 +105,9 @@ export class TelegramBot {
     this.bot.command("gopaper", (ctx) => this.handleGoPaper(ctx));
     this.bot.command("mode", (ctx) => this.handleMode(ctx));
     this.bot.command("livepnl", (ctx) => this.handleLivePnl(ctx));
+
+    // Pagination callback buttons
+    this.bot.on("callback_query", (ctx) => this.handleCallbackQuery(ctx));
 
     // Catch-all
     this.bot.on("text", (ctx) =>
@@ -224,32 +230,70 @@ export class TelegramBot {
   }
 
   // ──────────────────────────────────────────────────────
-  // /activebets
+  // /activebets  (paginated)
   // ──────────────────────────────────────────────────────
 
-  private async handleActiveBets(ctx: Context): Promise<void> {
+  private async handleActiveBets(ctx: Context, page = 0): Promise<void> {
     try {
-      const openTrades = await PaperTrade.find({ status: "Open" }).sort({
-        opened_at: -1,
-      });
+      const totalCount = await PaperTrade.countDocuments({ status: "Open" });
 
-      if (openTrades.length === 0) {
+      if (totalCount === 0) {
         await ctx.reply("📭 No active paper trades.");
         return;
       }
 
-      let text = `📋 <b>Active Bets (${openTrades.length})</b>\n\n`;
+      const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+      const safePage = Math.max(0, Math.min(page, totalPages - 1));
+
+      const openTrades = await PaperTrade.find({ status: "Open" })
+        .sort({ opened_at: -1 })
+        .skip(safePage * PAGE_SIZE)
+        .limit(PAGE_SIZE);
+
+      const from = safePage * PAGE_SIZE + 1;
+      const to = safePage * PAGE_SIZE + openTrades.length;
+
+      let text = `📋 <b>Active Bets</b>  (${from}–${to} of ${totalCount})\n`;
 
       for (const trade of openTrades as IPaperTrade[]) {
+        const eventDate = this.formatEventDate(trade.event_end_date);
+        const openedAt = this.formatDateTime(trade.opened_at);
+        const modeTag = trade.is_live ? "🔴" : "📝";
+        const typeTag = trade.trade_type === "catchup" ? "🔄" : "📋";
+
         text +=
-          `• <b>${trade.question}</b>\n` +
-          `  Direction: ${trade.direction} | Entry: ${(trade.entry_price * 100).toFixed(1)}¢\n` +
-          `  Amount: $${trade.paper_investment_amount.toFixed(2)} | Shares: ${trade.num_shares.toFixed(2)}\n` +
-          `  Whale: ${trade.whale_wallet.slice(0, 6)}…\n` +
-          `  Opened: ${trade.opened_at.toISOString().slice(0, 10)}\n\n`;
+          `\n${modeTag}${typeTag} <b>${trade.question}</b>\n` +
+          `  🎯 ${trade.direction} @ ${(trade.entry_price * 100).toFixed(1)}¢` +
+          ` · $${trade.paper_investment_amount.toFixed(2)}` +
+          ` · ${trade.num_shares.toFixed(2)} shares\n` +
+          (eventDate ? `  📅 Event: ${eventDate}\n` : "") +
+          `  🕐 Opened: ${openedAt}\n`;
       }
 
-      await ctx.reply(text, { parse_mode: "HTML" });
+      // Build inline keyboard for pagination
+      const buttons: { text: string; callback_data: string }[] = [];
+      if (safePage > 0) {
+        buttons.push({
+          text: `◀ Prev`,
+          callback_data: `ab:${safePage - 1}`,
+        });
+      }
+      if (safePage < totalPages - 1) {
+        buttons.push({
+          text: `Next ▶`,
+          callback_data: `ab:${safePage + 1}`,
+        });
+      }
+
+      const keyboard =
+        buttons.length > 0
+          ? Markup.inlineKeyboard(buttons)
+          : undefined;
+
+      await ctx.reply(text, {
+        parse_mode: "HTML",
+        ...(keyboard ? keyboard : {}),
+      });
     } catch (err) {
       logger.error(`/activebets error: ${err}`);
       await ctx.reply("❌ Error fetching active bets.");
@@ -257,34 +301,72 @@ export class TelegramBot {
   }
 
   // ──────────────────────────────────────────────────────
-  // /history
+  // /history  (paginated)
   // ──────────────────────────────────────────────────────
 
-  private async handleHistory(ctx: Context): Promise<void> {
+  private async handleHistory(ctx: Context, page = 0): Promise<void> {
     try {
-      const resolvedTrades = await PaperTrade.find({
+      const totalCount = await PaperTrade.countDocuments({
         status: { $in: ["Resolved_Won", "Resolved_Lost"] },
-      })
-        .sort({ resolved_at: -1 })
-        .limit(10);
+      });
 
-      if (resolvedTrades.length === 0) {
+      if (totalCount === 0) {
         await ctx.reply("📭 No resolved trades yet.");
         return;
       }
 
-      let text = `📜 <b>Recent History (last ${resolvedTrades.length})</b>\n\n`;
+      const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+      const safePage = Math.max(0, Math.min(page, totalPages - 1));
+
+      const resolvedTrades = await PaperTrade.find({
+        status: { $in: ["Resolved_Won", "Resolved_Lost"] },
+      })
+        .sort({ resolved_at: -1 })
+        .skip(safePage * PAGE_SIZE)
+        .limit(PAGE_SIZE);
+
+      const from = safePage * PAGE_SIZE + 1;
+      const to = safePage * PAGE_SIZE + resolvedTrades.length;
+
+      let text = `📜 <b>Trade History</b>  (${from}–${to} of ${totalCount})\n`;
 
       for (const trade of resolvedTrades as IPaperTrade[]) {
         const emoji = trade.status === "Resolved_Won" ? "✅" : "❌";
         const pnlStr = `${trade.pnl >= 0 ? "+" : ""}$${trade.pnl.toFixed(2)}`;
+        const resolvedAt = trade.resolved_at
+          ? this.formatDateTime(trade.resolved_at)
+          : "N/A";
+
         text +=
-          `${emoji} <b>${trade.question}</b>\n` +
-          `  ${trade.direction} @ ${(trade.entry_price * 100).toFixed(1)}¢ → PnL: ${pnlStr}\n` +
-          `  Resolved: ${trade.resolved_at?.toISOString().slice(0, 10) ?? "N/A"}\n\n`;
+          `\n${emoji} <b>${trade.question}</b>\n` +
+          `  🎯 ${trade.direction} @ ${(trade.entry_price * 100).toFixed(1)}¢` +
+          ` → PnL: <code>${pnlStr}</code>\n` +
+          `  🕐 Resolved: ${resolvedAt}\n`;
       }
 
-      await ctx.reply(text, { parse_mode: "HTML" });
+      const buttons: { text: string; callback_data: string }[] = [];
+      if (safePage > 0) {
+        buttons.push({
+          text: `◀ Prev`,
+          callback_data: `hi:${safePage - 1}`,
+        });
+      }
+      if (safePage < totalPages - 1) {
+        buttons.push({
+          text: `Next ▶`,
+          callback_data: `hi:${safePage + 1}`,
+        });
+      }
+
+      const keyboard =
+        buttons.length > 0
+          ? Markup.inlineKeyboard(buttons)
+          : undefined;
+
+      await ctx.reply(text, {
+        parse_mode: "HTML",
+        ...(keyboard ? keyboard : {}),
+      });
     } catch (err) {
       logger.error(`/history error: ${err}`);
       await ctx.reply("❌ Error fetching trade history.");
@@ -613,6 +695,93 @@ export class TelegramBot {
       logger.error(`/livepnl error: ${err}`);
       await ctx.reply("❌ Error fetching live PnL from Polymarket.");
     }
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Callback query handler (pagination buttons)
+  // ──────────────────────────────────────────────────────
+
+  private async handleCallbackQuery(ctx: Context): Promise<void> {
+    try {
+      const cbQuery = ctx.callbackQuery;
+      if (!cbQuery || !("data" in cbQuery)) return;
+
+      const data = cbQuery.data as string;
+      await ctx.answerCbQuery(); // Acknowledge the button press
+
+      if (data.startsWith("ab:")) {
+        const page = parseInt(data.slice(3), 10);
+        if (!isNaN(page)) await this.handleActiveBets(ctx, page);
+      } else if (data.startsWith("hi:")) {
+        const page = parseInt(data.slice(3), 10);
+        if (!isNaN(page)) await this.handleHistory(ctx, page);
+      }
+    } catch (err) {
+      logger.error(`Callback query error: ${err}`);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Formatting helpers
+  // ──────────────────────────────────────────────────────
+
+  /**
+   * Format a Date as "25 Mar 2026, 14:30 UTC"
+   */
+  private formatDateTime(date: Date): string {
+    const months = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const d = date.getUTCDate();
+    const mon = months[date.getUTCMonth()];
+    const yr = date.getUTCFullYear();
+    const hh = String(date.getUTCHours()).padStart(2, "0");
+    const mm = String(date.getUTCMinutes()).padStart(2, "0");
+    return `${d} ${mon} ${yr}, ${hh}:${mm} UTC`;
+  }
+
+  /**
+   * Format an event end date in a human-friendly way.
+   * Returns null if the date is missing/invalid.
+   *
+   * Examples:
+   *   "Today, 23:59 UTC"
+   *   "Tomorrow, 04:00 UTC"
+   *   "26 Mar 2026, 20:00 UTC"
+   *   "26 Mar 2026"  (if time is midnight → likely date-only)
+   */
+  private formatEventDate(date: Date | null | undefined): string | null {
+    if (!date) return null;
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return null;
+
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const tomorrowDate = new Date(now);
+    tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1);
+    const tomorrowStr = tomorrowDate.toISOString().slice(0, 10);
+    const eventDateStr = d.toISOString().slice(0, 10);
+
+    const hh = d.getUTCHours();
+    const mm = d.getUTCMinutes();
+    const hasTime = hh !== 0 || mm !== 0;
+    const timePart = hasTime
+      ? `, ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")} UTC`
+      : "";
+
+    if (eventDateStr === todayStr) {
+      return `Today${timePart}`;
+    }
+    if (eventDateStr === tomorrowStr) {
+      return `Tomorrow${timePart}`;
+    }
+
+    const months = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    return `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}${timePart}`;
   }
 }
 

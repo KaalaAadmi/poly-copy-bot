@@ -386,6 +386,28 @@ export class PolymarketAPI {
 
     return results.join("\n  ");
   }
+
+  /**
+   * Fetch the endDate for a specific token from a wallet's positions.
+   * Returns the end date string (e.g. "2026-03-25") or null if not found.
+   */
+  async getTokenEndDate(
+    walletAddress: string,
+    tokenId: string,
+  ): Promise<string | null> {
+    try {
+      const positions = await this.getUserPositions(walletAddress);
+      for (const pos of positions) {
+        const asset = String(pos.asset || pos.asset_id || pos.token_id || "");
+        if (asset === tokenId && pos.endDate) {
+          return String(pos.endDate);
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 export const polymarketApi = new PolymarketAPI();

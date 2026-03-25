@@ -188,6 +188,7 @@ export class CatchupService {
     const outcome = String(pos.outcome || "");
     const posTitle = String(pos.title || pos.question || "");
     const posSlug = String(pos.eventSlug || pos.slug || "");
+    const posEndDate = pos.endDate ? String(pos.endDate) : "";
     const curPrice = parseFloat(String(pos.curPrice ?? "-1"));
     const redeemable = Boolean(pos.redeemable);
     const mergeable = Boolean(pos.mergeable);
@@ -331,6 +332,7 @@ export class CatchupService {
       syntheticId,
       posTitle,
       posSlug,
+      posEndDate,
     );
 
     return "copied";
@@ -351,6 +353,7 @@ export class CatchupService {
     syntheticId: string,
     posTitle: string,
     posSlug: string,
+    posEndDate: string,
   ): Promise<void> {
     const system = await riskEngine.getSystemState();
 
@@ -415,6 +418,12 @@ export class CatchupService {
     }
 
     // Record the trade
+    let eventEndDate: Date | null = null;
+    if (posEndDate) {
+      const parsed = new Date(posEndDate);
+      if (!isNaN(parsed.getTime())) eventEndDate = parsed;
+    }
+
     const internalId = uuidv4();
     await PaperTrade.create({
       internal_trade_id: internalId,
@@ -433,6 +442,7 @@ export class CatchupService {
       opened_at: new Date(),
       is_live: isLive,
       live_order_id: liveOrderId,
+      event_end_date: eventEndDate,
     });
 
     // Deduct from balance

@@ -306,9 +306,7 @@ export class MarketResolver {
    *   • CLOB 404 + no whale position                 → market resolved but outcome unknown
    *     (in this case, fall back to checking if endDate has passed)
    */
-  private async dataApiFallbackCheck(
-    trades: IPaperTrade[],
-  ): Promise<void> {
+  private async dataApiFallbackCheck(trades: IPaperTrade[]): Promise<void> {
     // Group trades by whale_wallet to batch Data API calls
     const tradesByWallet = new Map<string, IPaperTrade[]>();
     for (const trade of trades) {

@@ -24,6 +24,7 @@ export interface IPaperTrade extends Document {
   resolved_at: Date | null;
   is_live: boolean;
   live_order_id: string;
+  event_end_date: Date | null;
 }
 
 const PaperTradeSchema = new Schema<IPaperTrade>(
@@ -59,6 +60,7 @@ const PaperTradeSchema = new Schema<IPaperTrade>(
     resolved_at: { type: Date, default: null },
     is_live: { type: Boolean, default: false },
     live_order_id: { type: String, default: "" },
+    event_end_date: { type: Date, default: null },
   },
   { timestamps: true },
 );

@@ -231,6 +231,21 @@ export class RiskEngine {
     }
 
     // 5. Log the trade
+    // Fetch event end date from the whale's positions (Data API)
+    let eventEndDate: Date | null = null;
+    try {
+      const endDateStr = await polymarketApi.getTokenEndDate(
+        walletAddress,
+        tokenId,
+      );
+      if (endDateStr) {
+        const parsed = new Date(endDateStr);
+        if (!isNaN(parsed.getTime())) eventEndDate = parsed;
+      }
+    } catch {
+      // Non-critical, proceed without end date
+    }
+
     const internalId = uuidv4();
     await PaperTrade.create({
       internal_trade_id: internalId,
@@ -249,6 +264,7 @@ export class RiskEngine {
       opened_at: new Date(),
       is_live: isLive,
       live_order_id: liveOrderId,
+      event_end_date: eventEndDate,
     });
 
     // Deduct from current balance
