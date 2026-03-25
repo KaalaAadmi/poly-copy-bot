@@ -337,33 +337,64 @@ export class PolymarketAPI {
   }
 
   /**
-   * Fetch current positions for a wallet address.
+   * Fetch ALL positions for a wallet address, paginating through the
+   * Data API (which returns at most 100 per request).
+   *
+   * Heavy traders can have 500-1000+ positions. Without pagination we
+   * only see the first 100 (sorted by size desc), which are typically
+   * old resolved positions — causing the catchup service to find
+   * "0 active positions".
    */
   async getUserPositions(
     walletAddress: string,
   ): Promise<Record<string, unknown>[]> {
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 20; // safety cap: 2000 positions max
+    const allPositions: Record<string, unknown>[] = [];
+
     try {
-      const resp = await this.data.get("/positions", {
-        params: { user: walletAddress.toLowerCase() },
-      });
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const offset = page * PAGE_SIZE;
+        const resp = await this.data.get("/positions", {
+          params: {
+            user: walletAddress.toLowerCase(),
+            limit: PAGE_SIZE,
+            offset,
+          },
+        });
 
-      const positions = Array.isArray(resp.data)
-        ? resp.data
-        : (resp.data?.positions ?? []);
+        const positions: Record<string, unknown>[] = Array.isArray(resp.data)
+          ? resp.data
+          : (resp.data?.positions ?? []);
 
-      // Log detailed response info only on the first successful call
-      if (!this.positionsLoggedOnce && positions.length > 0) {
-        this.positionsLoggedOnce = true;
-        logger.info(
-          `API /positions first success: status=${resp.status}, count=${positions.length}, ` +
-            `keys=[${Object.keys(positions[0]).join(", ")}]`,
-        );
-        logger.info(
-          `API /positions sample: ${JSON.stringify(positions[0]).slice(0, 500)}`,
+        // Log detailed response info only on the first successful call
+        if (!this.positionsLoggedOnce && positions.length > 0) {
+          this.positionsLoggedOnce = true;
+          logger.info(
+            `API /positions first success: status=${resp.status}, count=${positions.length}, ` +
+              `keys=[${Object.keys(positions[0]).join(", ")}]`,
+          );
+          logger.info(
+            `API /positions sample: ${JSON.stringify(positions[0]).slice(0, 500)}`,
+          );
+        }
+
+        allPositions.push(...positions);
+
+        // If we got fewer than PAGE_SIZE, we've reached the end
+        if (positions.length < PAGE_SIZE) break;
+
+        // Small delay between pages to respect rate limits
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      if (allPositions.length > 0) {
+        logger.debug(
+          `API /positions total for ${walletAddress.slice(0, 8)}…: ${allPositions.length} position(s)`,
         );
       }
 
-      return positions;
+      return allPositions;
     } catch (err) {
       const axiosErr = err as {
         response?: { status?: number; data?: unknown };
@@ -374,7 +405,8 @@ export class PolymarketAPI {
             ? ` (status=${axiosErr.response.status}, body=${JSON.stringify(axiosErr.response.data).slice(0, 200)})`
             : ""),
       );
-      return [];
+      // Return whatever we've collected so far (partial data is better than none)
+      return allPositions;
     }
   }
   /**
