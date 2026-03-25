@@ -179,18 +179,30 @@ export class TelegramBot {
     try {
       const state = await riskEngine.getSystemState();
 
-      // All-time PnL
-      const allTimePnl = state.current_balance - state.initial_balance;
+      // ── Net Realized PnL – sum of pnl from ALL resolved trades ──
+      const allResolved = await PaperTrade.find({
+        status: { $in: ["Resolved_Won", "Resolved_Lost"] },
+      });
+      const netRealisedPnl = allResolved.reduce(
+        (sum: number, t: IPaperTrade) => sum + t.pnl,
+        0,
+      );
+      const resolvedWon = allResolved.filter(
+        (t: IPaperTrade) => t.status === "Resolved_Won",
+      ).length;
+      const resolvedLost = allResolved.filter(
+        (t: IPaperTrade) => t.status === "Resolved_Lost",
+      ).length;
 
       // Monthly PnL – resolved trades this calendar month
       const startOfMonth = new Date();
       startOfMonth.setUTCDate(1);
       startOfMonth.setUTCHours(0, 0, 0, 0);
 
-      const monthlyTrades = await PaperTrade.find({
-        status: { $in: ["Resolved_Won", "Resolved_Lost"] },
-        resolved_at: { $gte: startOfMonth },
-      });
+      const monthlyTrades = allResolved.filter(
+        (t: IPaperTrade) =>
+          t.resolved_at && new Date(t.resolved_at) >= startOfMonth,
+      );
       const monthlyPnl = monthlyTrades.reduce(
         (sum: number, t: IPaperTrade) => sum + t.pnl,
         0,
@@ -200,27 +212,35 @@ export class TelegramBot {
       const startOfDay = new Date();
       startOfDay.setUTCHours(0, 0, 0, 0);
 
-      const dailyTrades = await PaperTrade.find({
-        status: { $in: ["Resolved_Won", "Resolved_Lost"] },
-        resolved_at: { $gte: startOfDay },
-      });
+      const dailyTrades = allResolved.filter(
+        (t: IPaperTrade) =>
+          t.resolved_at && new Date(t.resolved_at) >= startOfDay,
+      );
       const dailyPnl = dailyTrades.reduce(
         (sum: number, t: IPaperTrade) => sum + t.pnl,
         0,
       );
 
-      // Open PnL – unrealised gains/losses on active positions
+      // Open trades count
+      const openCount = await PaperTrade.countDocuments({ status: "Open" });
+
+      // Capital currently deployed in open trades
       const openTrades = await PaperTrade.find({ status: "Open" });
-      const openCount = openTrades.length;
+      const deployedCapital = openTrades.reduce(
+        (sum: number, t: IPaperTrade) => sum + t.paper_investment_amount,
+        0,
+      );
 
       const fmt = (n: number) => `${n >= 0 ? "+" : ""}$${n.toFixed(2)}`;
 
       const text =
         `📈 <b>Profit & Loss</b>\n\n` +
-        `📊 All-Time PnL: <code>${fmt(allTimePnl)}</code>\n` +
+        `✅ Net Realized PnL: <code>${fmt(netRealisedPnl)}</code> (${resolvedWon}W / ${resolvedLost}L)\n` +
+        `💼 Balance: <code>$${state.current_balance.toFixed(2)}</code> (started: $${state.initial_balance.toFixed(2)})\n\n` +
         `📅 Monthly PnL: <code>${fmt(monthlyPnl)}</code> (${monthlyTrades.length} trades)\n` +
-        `🕐 Daily PnL: <code>${fmt(dailyPnl)}</code> (${dailyTrades.length} trades)\n` +
-        `📂 Open Trades: <code>${openCount}</code>`;
+        `🕐 Daily PnL: <code>${fmt(dailyPnl)}</code> (${dailyTrades.length} trades)\n\n` +
+        `📂 Open Trades: <code>${openCount}</code>\n` +
+        `💰 Deployed: <code>$${deployedCapital.toFixed(2)}</code>`;
 
       await ctx.reply(text, { parse_mode: "HTML" });
     } catch (err) {
@@ -334,9 +354,11 @@ export class TelegramBot {
         const resolvedAt = trade.resolved_at
           ? this.formatDateTime(trade.resolved_at)
           : "N/A";
+        const modeTag = trade.is_live ? "🔴" : "📝";
+        const typeTag = trade.trade_type === "catchup" ? "🔄" : "📋";
 
         text +=
-          `\n${emoji} <b>${trade.question}</b>\n` +
+          `\n${emoji}${modeTag}${typeTag} <b>${trade.question}</b>\n` +
           `  🎯 ${trade.direction} @ ${(trade.entry_price * 100).toFixed(1)}¢` +
           ` → PnL: <code>${pnlStr}</code>\n` +
           `  🕐 Resolved: ${resolvedAt}\n`;
@@ -752,10 +774,11 @@ export class TelegramBot {
    * Returns null if the date is missing/invalid.
    *
    * Examples:
-   *   "Today, 23:59 UTC"
-   *   "Tomorrow, 04:00 UTC"
+   *   "Today"
+   *   "Tomorrow"
+   *   "Yesterday"
    *   "26 Mar 2026, 20:00 UTC"
-   *   "26 Mar 2026"  (if time is midnight → likely date-only)
+   *   "26 Mar 2026"  (if time is midnight or 23:59 → date-only)
    */
   private formatEventDate(date: Date | null | undefined): string | null {
     if (!date) return null;
@@ -764,23 +787,33 @@ export class TelegramBot {
 
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
+
     const tomorrowDate = new Date(now);
     tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1);
     const tomorrowStr = tomorrowDate.toISOString().slice(0, 10);
+
+    const yesterdayDate = new Date(now);
+    yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
+    const yesterdayStr = yesterdayDate.toISOString().slice(0, 10);
+
     const eventDateStr = d.toISOString().slice(0, 10);
 
     const hh = d.getUTCHours();
     const mm = d.getUTCMinutes();
-    const hasTime = hh !== 0 || mm !== 0;
-    const timePart = hasTime
-      ? `, ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")} UTC`
-      : "";
+    // Treat midnight (00:00) or 23:59 as "date-only" (slug-parsed dates)
+    const isDateOnly = (hh === 0 && mm === 0) || (hh === 23 && mm === 59);
+    const timePart = isDateOnly
+      ? ""
+      : `, ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")} UTC`;
 
     if (eventDateStr === todayStr) {
       return `Today${timePart}`;
     }
     if (eventDateStr === tomorrowStr) {
       return `Tomorrow${timePart}`;
+    }
+    if (eventDateStr === yesterdayStr) {
+      return `Yesterday${timePart}`;
     }
 
     const months = [

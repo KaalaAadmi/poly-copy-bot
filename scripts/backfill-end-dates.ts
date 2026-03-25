@@ -50,9 +50,7 @@ async function fetchPositions(
       params: { user: wallet.toLowerCase() },
       timeout: 15_000,
     });
-    return Array.isArray(resp.data)
-      ? resp.data
-      : (resp.data?.positions ?? []);
+    return Array.isArray(resp.data) ? resp.data : (resp.data?.positions ?? []);
   } catch (err) {
     console.error(`  ⚠ Failed to fetch positions for ${wallet}: ${err}`);
     return [];
@@ -82,10 +80,7 @@ async function main() {
 
   // Find all trades missing event_end_date
   const trades = await PaperTrade.find({
-    $or: [
-      { event_end_date: null },
-      { event_end_date: { $exists: false } },
-    ],
+    $or: [{ event_end_date: null }, { event_end_date: { $exists: false } }],
   });
 
   console.log(`📋 Found ${trades.length} trade(s) missing event_end_date\n`);
@@ -99,7 +94,7 @@ async function main() {
   // Group by whale_wallet
   const byWallet = new Map<string, typeof trades>();
   for (const trade of trades) {
-    const wallet = (trade.whale_wallet as string || "").toLowerCase();
+    const wallet = ((trade.whale_wallet as string) || "").toLowerCase();
     if (!wallet) continue;
     if (!byWallet.has(wallet)) byWallet.set(wallet, []);
     byWallet.get(wallet)!.push(trade);
@@ -128,7 +123,9 @@ async function main() {
       }
     }
 
-    console.log(`    → ${positions.length} position(s), ${endDateMap.size} with endDate`);
+    console.log(
+      `    → ${positions.length} position(s), ${endDateMap.size} with endDate`,
+    );
 
     for (const trade of walletTrades) {
       const tokenId = trade.token_id as string;
@@ -148,7 +145,7 @@ async function main() {
       }
 
       // Fallback: parse date from market_slug (e.g. "nba-nop-nyk-2026-03-24-spread-home-8pt5")
-      const slugDate = parseDateFromSlug(trade.market_slug as string || "");
+      const slugDate = parseDateFromSlug((trade.market_slug as string) || "");
       if (slugDate) {
         trade.event_end_date = slugDate;
         await trade.save();

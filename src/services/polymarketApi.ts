@@ -177,6 +177,40 @@ export class PolymarketAPI {
     }
   }
 
+  /**
+   * Fetch a market by one of its CLOB token IDs.
+   * Useful as a fallback when conditionId and slug lookups fail.
+   */
+  async getMarketByTokenId(tokenId: string): Promise<GammaMarket | null> {
+    try {
+      const resp = await this.gamma.get("/markets", {
+        params: { clob_token_ids: tokenId, limit: 5 },
+      });
+      const markets: GammaMarket[] = resp.data;
+      if (markets.length === 0) return null;
+
+      // Verify the returned market actually contains our token ID
+      for (const market of markets) {
+        try {
+          const tokenIds: string[] = JSON.parse(market.clobTokenIds);
+          if (tokenIds.includes(tokenId)) return market;
+        } catch {
+          continue;
+        }
+      }
+
+      logger.debug(
+        `Gamma API returned markets for token ${tokenId.slice(0, 16)}… but none contained the token`,
+      );
+      return null;
+    } catch (err) {
+      logger.debug(
+        `Error fetching market by token ${tokenId.slice(0, 16)}…: ${err}`,
+      );
+      return null;
+    }
+  }
+
   // ===== CLOB API (Prices) =====
 
   /**
