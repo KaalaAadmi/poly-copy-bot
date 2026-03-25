@@ -364,8 +364,7 @@ export class TelegramBot {
           : "N/A";
         const modeTag = trade.is_live ? "🔴" : "📝";
         const typeTag = trade.trade_type === "catchup" ? "🔄" : "📋";
-        const statusLabel =
-          trade.status === "Exited" ? " (Whale Exit)" : "";
+        const statusLabel = trade.status === "Exited" ? " (Whale Exit)" : "";
 
         text +=
           `\n${emoji}${modeTag}${typeTag} <b>${trade.question}</b>${statusLabel}\n` +
