@@ -294,7 +294,10 @@ export class CatchupService {
 
       if (this.sendAlert) {
         const question =
-          posTitle || market?.question || conditionId?.slice(0, 20) || tokenId.slice(0, 12);
+          posTitle ||
+          market?.question ||
+          conditionId?.slice(0, 20) ||
+          tokenId.slice(0, 12);
         await this.sendAlert(
           `⏭ <b>Catchup skipped</b>\n` +
             `📌 ${question}\n` +

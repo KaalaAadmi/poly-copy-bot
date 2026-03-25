@@ -106,9 +106,7 @@ export class PolymarketAPI {
       // Verify the returned market actually matches the requested conditionId.
       // The Gamma API silently returns unrelated results on a miss.
       const market = markets[0];
-      if (
-        market.conditionId.toLowerCase() !== conditionId.toLowerCase()
-      ) {
+      if (market.conditionId.toLowerCase() !== conditionId.toLowerCase()) {
         logger.debug(
           `Gamma API returned wrong market for condition ${conditionId.slice(0, 16)}… ` +
             `(got "${market.question}" with condition ${market.conditionId.slice(0, 16)}…)`,

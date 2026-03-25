@@ -175,9 +175,7 @@ export class RiskEngine {
     if (!question) question = "Unknown Market";
 
     // Build the Polymarket URL — use eventSlug for the event page
-    const marketUrl = slug
-      ? `https://polymarket.com/event/${slug}`
-      : "";
+    const marketUrl = slug ? `https://polymarket.com/event/${slug}` : "";
 
     // Notify: whale trade details (what the tracked wallet placed)
     const outcomeLabel = activity.outcome || direction;
