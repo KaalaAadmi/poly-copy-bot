@@ -375,6 +375,138 @@ export class RiskEngine {
   // ──────────────────────────────────────────────────────
 
   /**
+   * Exit an open trade early because the whale sold the position.
+   * Sells at the current market price instead of waiting for binary resolution.
+   *
+   * @param tokenId – The token ID the whale sold
+   * @param whaleActivity – Optional: the whale SELL activity for logging
+   */
+  async exitTrade(
+    tokenId: string,
+    whaleActivity?: UserActivity,
+  ): Promise<void> {
+    const trade = await PaperTrade.findOne({
+      token_id: tokenId,
+      status: "Open",
+    });
+    if (!trade) {
+      logger.debug(
+        `exitTrade: no open trade found for token ${tokenId.slice(0, 12)}…`,
+      );
+      return;
+    }
+
+    // Fetch current market price to determine exit price
+    let exitPrice = await polymarketApi.getMidpointPrice(tokenId);
+    if (exitPrice === null) {
+      exitPrice = await polymarketApi.getPrice(tokenId);
+    }
+    if (exitPrice === null) {
+      // If we can't get a price (market may be closed), use the whale's sell price as fallback
+      if (whaleActivity?.price) {
+        exitPrice = parseFloat(String(whaleActivity.price));
+      }
+    }
+    if (exitPrice === null || isNaN(exitPrice) || exitPrice < 0) {
+      logger.warn(
+        `exitTrade: cannot determine exit price for token ${tokenId.slice(0, 12)}… – aborting exit`,
+      );
+      return;
+    }
+
+    const state = await this.getSystemState();
+    const isLive = trade.is_live;
+
+    // If live mode, place a real sell order
+    let liveSellOrderId = "";
+    if (isLive && liveTrader.isReady()) {
+      // Look up market metadata for tick size and neg_risk
+      let tickSize = "0.01";
+      let negRisk = false;
+      if (trade.condition_id) {
+        const market = await this.lookupMarket(trade.condition_id);
+        if (market) {
+          tickSize = market.minimum_tick_size ?? "0.01";
+          negRisk = market.neg_risk ?? false;
+        }
+      }
+
+      const sellResult = await liveTrader.placeSellOrder(
+        tokenId,
+        trade.num_shares,
+        exitPrice,
+        tickSize,
+        negRisk,
+      );
+
+      if (!sellResult.success) {
+        const msg =
+          `⚠️ Live SELL order FAILED for whale-exit on ${trade.question}\n` +
+          `Error: ${sellResult.errorMsg}`;
+        logger.error(msg);
+        if (this.sendAlert) await this.sendAlert(msg);
+        // Don't abort — still close the paper record so we don't keep trying
+      } else {
+        liveSellOrderId = sellResult.orderID;
+      }
+    }
+
+    // Calculate PnL: (exitPrice × numShares) - investment
+    const proceeds = exitPrice * trade.num_shares;
+    const pnl = proceeds - trade.paper_investment_amount;
+
+    trade.exit_price = exitPrice;
+    trade.pnl = pnl;
+    trade.status = "Exited";
+    trade.resolved_at = new Date();
+    await trade.save();
+
+    // Credit proceeds back to balance
+    if (isLive) {
+      const realBalance = await liveTrader.getUsdcBalance();
+      if (realBalance !== null) {
+        state.current_balance = realBalance;
+      } else {
+        state.current_balance += proceeds;
+      }
+    } else {
+      state.current_balance += proceeds;
+    }
+    await state.save();
+
+    // Reset suppression flags – balance changed
+    this.insufficientBalanceNotified = false;
+    this.exposureLimitNotified = false;
+
+    const pnlSign = pnl >= 0 ? "+" : "";
+    const modeLabel = isLive ? "🔴 LIVE" : "📝 PAPER";
+    const typeLabel = trade.trade_type === "catchup" ? "🔄 Catchup" : "📋 Copy";
+    const whaleInfo = whaleActivity
+      ? `\n🐋 Whale sold: ${whaleActivity.size || "?"} @ ${whaleActivity.price || "?"}`
+      : "";
+
+    const msg =
+      `🚪 <b>Trade Exited – Whale Sold</b> [${modeLabel}] [${typeLabel}]\n` +
+      `─────────────────────\n` +
+      `📌 Market: ${trade.question}\n` +
+      `🎯 Direction: ${trade.direction}\n` +
+      `💲 Entry: ${(trade.entry_price * 100).toFixed(1)}¢ → Exit: ${(exitPrice * 100).toFixed(1)}¢\n` +
+      `🔢 Shares: ${trade.num_shares.toFixed(2)}\n` +
+      `💰 Investment: $${trade.paper_investment_amount.toFixed(2)}\n` +
+      `📈 PnL: <code>${pnlSign}$${pnl.toFixed(2)}</code>\n` +
+      (!isLive ? `💼 Balance: $${state.current_balance.toFixed(2)}\n` : "") +
+      whaleInfo +
+      `\n🔗 Whale: ${trade.whale_wallet.slice(0, 6)}…${trade.whale_wallet.slice(-4)}` +
+      (liveSellOrderId
+        ? `\n📋 Sell Order: ${liveSellOrderId.slice(0, 12)}…`
+        : "") +
+      `\n🆔 Trade: ${trade.internal_trade_id.slice(0, 8)}`;
+
+    logger.info(msg);
+    if (this.sendAlert) await this.sendAlert(msg);
+  }
+
+  /**
    * Resolve an open paper trade.
    * Called when the underlying market resolves.
    *

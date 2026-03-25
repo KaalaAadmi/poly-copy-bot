@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from "mongoose";
 
-export type TradeStatus = "Open" | "Resolved_Won" | "Resolved_Lost";
+export type TradeStatus = "Open" | "Resolved_Won" | "Resolved_Lost" | "Exited";
 export type TradeDirection = "Yes" | "No";
 export type TradeType = "copy" | "catchup";
 
@@ -50,7 +50,7 @@ const PaperTradeSchema = new Schema<IPaperTrade>(
     exit_price: { type: Number, default: null },
     status: {
       type: String,
-      enum: ["Open", "Resolved_Won", "Resolved_Lost"],
+      enum: ["Open", "Resolved_Won", "Resolved_Lost", "Exited"],
       default: "Open",
     },
     whale_wallet: { type: String, required: true, lowercase: true },

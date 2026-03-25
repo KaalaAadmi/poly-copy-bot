@@ -179,9 +179,9 @@ export class TelegramBot {
     try {
       const state = await riskEngine.getSystemState();
 
-      // ── Net Realized PnL – sum of pnl from ALL resolved trades ──
+      // ── Net Realized PnL – sum of pnl from ALL resolved/exited trades ──
       const allResolved = await PaperTrade.find({
-        status: { $in: ["Resolved_Won", "Resolved_Lost"] },
+        status: { $in: ["Resolved_Won", "Resolved_Lost", "Exited"] },
       });
       const netRealisedPnl = allResolved.reduce(
         (sum: number, t: IPaperTrade) => sum + t.pnl,
@@ -192,6 +192,9 @@ export class TelegramBot {
       ).length;
       const resolvedLost = allResolved.filter(
         (t: IPaperTrade) => t.status === "Resolved_Lost",
+      ).length;
+      const exitedCount = allResolved.filter(
+        (t: IPaperTrade) => t.status === "Exited",
       ).length;
 
       // Monthly PnL – resolved trades this calendar month
@@ -235,7 +238,7 @@ export class TelegramBot {
 
       const text =
         `📈 <b>Profit & Loss</b>\n\n` +
-        `✅ Net Realized PnL: <code>${fmt(netRealisedPnl)}</code> (${resolvedWon}W / ${resolvedLost}L)\n` +
+        `✅ Net Realized PnL: <code>${fmt(netRealisedPnl)}</code> (${resolvedWon}W / ${resolvedLost}L / ${exitedCount}E)\n` +
         `💼 Balance: <code>$${state.current_balance.toFixed(2)}</code> (started: $${state.initial_balance.toFixed(2)})\n\n` +
         `📅 Monthly PnL: <code>${fmt(monthlyPnl)}</code> (${monthlyTrades.length} trades)\n` +
         `🕐 Daily PnL: <code>${fmt(dailyPnl)}</code> (${dailyTrades.length} trades)\n\n` +
@@ -325,7 +328,7 @@ export class TelegramBot {
   private async handleHistory(ctx: Context, page = 0): Promise<void> {
     try {
       const totalCount = await PaperTrade.countDocuments({
-        status: { $in: ["Resolved_Won", "Resolved_Lost"] },
+        status: { $in: ["Resolved_Won", "Resolved_Lost", "Exited"] },
       });
 
       if (totalCount === 0) {
@@ -337,7 +340,7 @@ export class TelegramBot {
       const safePage = Math.max(0, Math.min(page, totalPages - 1));
 
       const resolvedTrades = await PaperTrade.find({
-        status: { $in: ["Resolved_Won", "Resolved_Lost"] },
+        status: { $in: ["Resolved_Won", "Resolved_Lost", "Exited"] },
       })
         .sort({ resolved_at: -1 })
         .skip(safePage * PAGE_SIZE)
@@ -349,19 +352,29 @@ export class TelegramBot {
       let text = `📜 <b>Trade History</b>  (${from}–${to} of ${totalCount})\n`;
 
       for (const trade of resolvedTrades as IPaperTrade[]) {
-        const emoji = trade.status === "Resolved_Won" ? "✅" : "❌";
+        const emoji =
+          trade.status === "Resolved_Won"
+            ? "✅"
+            : trade.status === "Exited"
+              ? "🚪"
+              : "❌";
         const pnlStr = `${trade.pnl >= 0 ? "+" : ""}$${trade.pnl.toFixed(2)}`;
         const resolvedAt = trade.resolved_at
           ? this.formatDateTime(trade.resolved_at)
           : "N/A";
         const modeTag = trade.is_live ? "🔴" : "📝";
         const typeTag = trade.trade_type === "catchup" ? "🔄" : "📋";
+        const statusLabel =
+          trade.status === "Exited" ? " (Whale Exit)" : "";
 
         text +=
-          `\n${emoji}${modeTag}${typeTag} <b>${trade.question}</b>\n` +
+          `\n${emoji}${modeTag}${typeTag} <b>${trade.question}</b>${statusLabel}\n` +
           `  🎯 ${trade.direction} @ ${(trade.entry_price * 100).toFixed(1)}¢` +
+          (trade.exit_price !== null
+            ? ` → ${(trade.exit_price * 100).toFixed(1)}¢`
+            : "") +
           ` → PnL: <code>${pnlStr}</code>\n` +
-          `  🕐 Resolved: ${resolvedAt}\n`;
+          `  🕐 ${trade.status === "Exited" ? "Exited" : "Resolved"}: ${resolvedAt}\n`;
       }
 
       const buttons: { text: string; callback_data: string }[] = [];

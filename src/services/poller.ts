@@ -1,6 +1,6 @@
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
-import { TrackedWallet } from "../db/models/index.js";
+import { TrackedWallet, PaperTrade } from "../db/models/index.js";
 import { polymarketApi, UserActivity } from "./polymarketApi.js";
 import { riskEngine } from "./riskEngine.js";
 
@@ -192,7 +192,32 @@ export class Poller {
           `  TxHash: ${trade.transactionHash || "N/A"}`,
       );
 
-      await riskEngine.processSignal(trade, address);
+      const side = (trade.side || "").toUpperCase();
+
+      if (side === "SELL") {
+        // ── Whale EXIT detection ──
+        // Check if we have an open trade on the same token
+        const openTrade = await PaperTrade.findOne({
+          token_id: trade.asset,
+          status: "Open",
+          whale_wallet: address.toLowerCase(),
+        });
+
+        if (openTrade) {
+          logger.info(
+            `🚪 Whale SELL detected on token ${trade.asset.slice(0, 12)}… ` +
+              `– we have open trade ${openTrade.internal_trade_id.slice(0, 8)} – triggering exit`,
+          );
+          await riskEngine.exitTrade(trade.asset, trade);
+        } else {
+          logger.debug(
+            `Whale SELL on token ${trade.asset.slice(0, 12)}… – no matching open trade, ignoring`,
+          );
+        }
+      } else {
+        // ── Whale BUY – standard copy-trade flow ──
+        await riskEngine.processSignal(trade, address);
+      }
     }
 
     // Update high-water mark

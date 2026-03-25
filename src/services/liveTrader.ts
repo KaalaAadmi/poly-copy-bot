@@ -126,6 +126,71 @@ export class LiveTrader {
   // ──────────────────────────────────────────────────────
 
   /**
+   * Place a live limit-sell order on Polymarket to exit a position.
+   *
+   * Uses GTC (Good-Til-Cancelled) with price set at the current best bid
+   * so it fills immediately like a market order.
+   *
+   * @param tokenId  – The CLOB token ID (Yes or No token)
+   * @param numShares – Number of shares to sell
+   * @param price    – Limit price per share (should be the current bid)
+   * @param tickSize – Market tick size
+   * @param negRisk  – Whether this is a neg-risk (multi-outcome) market
+   */
+  async placeSellOrder(
+    tokenId: string,
+    numShares: number,
+    price: number,
+    tickSize: string,
+    negRisk: boolean,
+  ): Promise<LiveOrderResult> {
+    if (!this.client) {
+      return {
+        success: false,
+        orderID: "",
+        status: "",
+        errorMsg: "LiveTrader not initialised",
+      };
+    }
+
+    try {
+      const response = await this.client.createAndPostOrder(
+        {
+          tokenID: tokenId,
+          price,
+          size: numShares,
+          side: Side.SELL,
+        },
+        {
+          tickSize: tickSize as TickSize,
+          negRisk,
+        },
+        OrderType.GTC,
+      );
+
+      const result: LiveOrderResult = {
+        success: response.success !== false,
+        orderID: response.orderID || "",
+        status: response.status || "",
+        errorMsg: response.errorMsg || "",
+      };
+
+      if (result.success) {
+        logger.info(
+          `Live SELL order placed – ID: ${result.orderID}, status: ${result.status}`,
+        );
+      } else {
+        logger.warn(`Live SELL order rejected – ${result.errorMsg}`);
+      }
+
+      return result;
+    } catch (err) {
+      logger.error(`LiveTrader placeSellOrder error: ${err}`);
+      return { success: false, orderID: "", status: "", errorMsg: String(err) };
+    }
+  }
+
+  /**
    * Place a live limit-buy order on Polymarket at the current market price.
    *
    * Uses GTC (Good-Til-Cancelled) with price set at the current best ask
