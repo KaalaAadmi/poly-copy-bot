@@ -306,7 +306,7 @@ export class PolymarketAPI {
     sinceTimestamp = 0,
   ): Promise<UserActivity[]> {
     const PAGE_SIZE = 100;
-    const MAX_PAGES = 50; // safety cap: 5000 activities max
+    const MAX_PAGES = 150; // safety cap: 15000 activities max
     const allActivities: UserActivity[] = [];
 
     try {
