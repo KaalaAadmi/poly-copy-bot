@@ -26,8 +26,7 @@ const MONGODB_URI =
   process.env.MONGODB_URI || "mongodb://localhost:27017/polybot";
 const GAMMA_API_URL =
   process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
-const CLOB_API_URL =
-  process.env.CLOB_API_URL || "https://clob.polymarket.com";
+const CLOB_API_URL = process.env.CLOB_API_URL || "https://clob.polymarket.com";
 const DATA_API_URL =
   process.env.DATA_API_URL || "https://data-api.polymarket.com";
 
@@ -102,7 +101,9 @@ async function gammaLookupBySlug(slug: string): Promise<GammaMarket | null> {
   }
 }
 
-async function gammaLookupByTokenId(tokenId: string): Promise<GammaMarket | null> {
+async function gammaLookupByTokenId(
+  tokenId: string,
+): Promise<GammaMarket | null> {
   try {
     const resp = await axios.get(`${GAMMA_API_URL}/markets`, {
       params: { clob_token_ids: tokenId, limit: 5 },
@@ -136,7 +137,9 @@ async function clobIsAlive(tokenId: string): Promise<boolean> {
   }
 }
 
-async function getWhaleActivity(wallet: string): Promise<Record<string, unknown>[]> {
+async function getWhaleActivity(
+  wallet: string,
+): Promise<Record<string, unknown>[]> {
   try {
     const resp = await axios.get(`${DATA_API_URL}/activity`, {
       params: { user: wallet.toLowerCase() },
@@ -262,7 +265,7 @@ async function main() {
     if (won === null && conditionId && wallet) {
       const activities = await getWhaleActivity(wallet);
       for (const act of activities) {
-        const actType = (String(act.type || "")).toUpperCase();
+        const actType = String(act.type || "").toUpperCase();
         const actCondition = String(act.conditionId || "");
         if (actCondition !== conditionId) continue;
 

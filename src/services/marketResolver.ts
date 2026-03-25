@@ -270,7 +270,8 @@ export class MarketResolver {
       const tokensToCheck = new Map<string, IPaperTrade[]>();
       for (const trade of unresolvedAfterSlug) {
         if (!trade.token_id) continue;
-        if (!tokensToCheck.has(trade.token_id)) tokensToCheck.set(trade.token_id, []);
+        if (!tokensToCheck.has(trade.token_id))
+          tokensToCheck.set(trade.token_id, []);
         tokensToCheck.get(trade.token_id)!.push(trade);
       }
 
@@ -286,7 +287,9 @@ export class MarketResolver {
           );
           for (const id of resolved) resolvedTradeIds.add(id);
         } catch (err) {
-          logger.error(`Error resolving token "${tokenId.slice(0, 12)}…": ${err}`);
+          logger.error(
+            `Error resolving token "${tokenId.slice(0, 12)}…": ${err}`,
+          );
         }
       }
 
@@ -575,7 +578,9 @@ export class MarketResolver {
         // Also try by token ID as another fallback.
         let resolvedViaGamma = false;
 
-        const slugOrTokenLookups: (() => Promise<import("./polymarketApi.js").GammaMarket | null>)[] = [];
+        const slugOrTokenLookups: (() => Promise<
+          import("./polymarketApi.js").GammaMarket | null
+        >)[] = [];
         if (trade.market_slug) {
           slugOrTokenLookups.push(() =>
             polymarketApi.getMarketBySlug(trade.market_slug),
