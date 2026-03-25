@@ -109,7 +109,12 @@ export class Poller {
    * Poll a single wallet for new trading activity.
    */
   private async pollWallet(address: string): Promise<void> {
-    const activities = await polymarketApi.getUserActivity(address);
+    const hwm = this.highWaterMarks.get(address) || 0;
+
+    // Pass HWM as sinceTimestamp so the API client stops paginating
+    // once it reaches activities we've already seen. On the first poll
+    // (hwm=0), this fetches ALL history to set the correct HWM.
+    const activities = await polymarketApi.getUserActivity(address, hwm);
 
     logger.debug(
       `Poller [${address.slice(0, 8)}…]: API returned ${activities?.length ?? 0} activity item(s)`,
@@ -148,7 +153,6 @@ export class Poller {
       return;
     }
 
-    const hwm = this.highWaterMarks.get(address) || 0;
     const isFirstPoll = hwm === 0;
 
     // Sort by timestamp ascending so we process oldest first

@@ -290,31 +290,84 @@ export class PolymarketAPI {
   /**
    * Fetch recent trading activity for a wallet address.
    * This is the core method the Poller uses to detect whale trades.
+   *
+   * Paginates through activity pages so we never miss trades from
+   * heavy traders who generate 100+ activities between polling cycles.
+   * Results are sorted descending (newest first) by the API.
+   *
+   * @param walletAddress – The wallet to fetch activity for.
+   * @param sinceTimestamp – Optional: stop paginating once all activities
+   *   on a page are older than this timestamp. This prevents the poller
+   *   from fetching thousands of historical activities every 12s cycle.
+   *   Pass 0 or omit to fetch ALL activities (used on first poll).
    */
-  async getUserActivity(walletAddress: string): Promise<UserActivity[]> {
+  async getUserActivity(
+    walletAddress: string,
+    sinceTimestamp = 0,
+  ): Promise<UserActivity[]> {
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 50; // safety cap: 5000 activities max
+    const allActivities: UserActivity[] = [];
+
     try {
-      const resp = await this.data.get("/activity", {
-        params: { user: walletAddress.toLowerCase() },
-      });
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const offset = page * PAGE_SIZE;
+        const resp = await this.data.get("/activity", {
+          params: {
+            user: walletAddress.toLowerCase(),
+            limit: PAGE_SIZE,
+            offset,
+          },
+        });
 
-      // The API may return the data at different paths
-      const activities: UserActivity[] = Array.isArray(resp.data)
-        ? resp.data
-        : (resp.data?.history ?? resp.data?.data ?? []);
+        // The API may return the data at different paths
+        const activities: UserActivity[] = Array.isArray(resp.data)
+          ? resp.data
+          : (resp.data?.history ?? resp.data?.data ?? []);
 
-      // Log detailed response info only on the first successful call
-      if (!this.activityLoggedOnce && activities.length > 0) {
-        this.activityLoggedOnce = true;
-        logger.info(
-          `API /activity first success: status=${resp.status}, count=${activities.length}, ` +
-            `keys=[${Object.keys(activities[0]).join(", ")}]`,
-        );
-        logger.info(
-          `API /activity sample: ${JSON.stringify(activities[0]).slice(0, 500)}`,
+        // Log detailed response info only on the first successful call
+        if (!this.activityLoggedOnce && activities.length > 0) {
+          this.activityLoggedOnce = true;
+          logger.info(
+            `API /activity first success: status=${resp.status}, count=${activities.length}, ` +
+              `keys=[${Object.keys(activities[0]).join(", ")}]`,
+          );
+          logger.info(
+            `API /activity sample: ${JSON.stringify(activities[0]).slice(0, 500)}`,
+          );
+        }
+
+        allActivities.push(...activities);
+
+        // If we got fewer than PAGE_SIZE, we've reached the end
+        if (activities.length < PAGE_SIZE) break;
+
+        // Early-exit optimisation: if sinceTimestamp is set and the OLDEST
+        // activity on this page is still newer than our cutoff, we need
+        // to keep paginating. But if the oldest is already older, all
+        // subsequent pages will be even older — so we can stop.
+        if (sinceTimestamp > 0 && activities.length > 0) {
+          const oldestOnPage = Math.min(
+            ...activities.map((a) => a.timestamp || 0),
+          );
+          if (oldestOnPage <= sinceTimestamp) {
+            // This page already contains activities at/below our cutoff.
+            // We have everything we need — no point fetching more.
+            break;
+          }
+        }
+
+        // Small delay between pages to respect rate limits
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      if (allActivities.length > 0) {
+        logger.debug(
+          `API /activity total for ${walletAddress.slice(0, 8)}…: ${allActivities.length} activity(ies)`,
         );
       }
 
-      return activities;
+      return allActivities;
     } catch (err) {
       // Handle rate limiting gracefully
       const axiosErr = err as {
@@ -324,7 +377,8 @@ export class PolymarketAPI {
         logger.warn(
           `Rate limited while fetching activity for ${walletAddress}. Will retry next cycle.`,
         );
-        return [];
+        // Return whatever we've collected so far
+        return allActivities;
       }
       logger.error(
         `Error fetching activity for ${walletAddress}: ${err}` +
@@ -332,7 +386,8 @@ export class PolymarketAPI {
             ? ` (status=${axiosErr.response.status}, body=${JSON.stringify(axiosErr.response.data).slice(0, 200)})`
             : ""),
       );
-      return [];
+      // Return partial data on error
+      return allActivities;
     }
   }
 
@@ -340,7 +395,7 @@ export class PolymarketAPI {
    * Fetch ALL positions for a wallet address, paginating through the
    * Data API (which returns at most 100 per request).
    *
-   * Heavy traders can have 500-1000+ positions. Without pagination we
+   * Heavy traders can have 500-2000+ positions. Without pagination we
    * only see the first 100 (sorted by size desc), which are typically
    * old resolved positions — causing the catchup service to find
    * "0 active positions".
@@ -349,7 +404,7 @@ export class PolymarketAPI {
     walletAddress: string,
   ): Promise<Record<string, unknown>[]> {
     const PAGE_SIZE = 100;
-    const MAX_PAGES = 20; // safety cap: 2000 positions max
+    const MAX_PAGES = 50; // safety cap: 5000 positions max
     const allPositions: Record<string, unknown>[] = [];
 
     try {
