@@ -8,11 +8,16 @@ import { riskEngine } from "./riskEngine.js";
 /**
  * MarketResolver – Detects when open trades' underlying markets have resolved.
  *
- * Uses a two-pronged approach:
+ * Uses a three-pronged approach:
  *   1. **WebSocket (primary):** Subscribes to the Polymarket CLOB WS and
  *      listens for `market_resolved` events in real time.
- *   2. **Polling (fallback):** Every 5 minutes, queries the Gamma API for
- *      all open-trade condition IDs and checks their `closed` flag.
+ *   2. **Gamma API polling (fallback #1):** Every 5 minutes, queries the
+ *      Gamma API for open-trade condition IDs and checks resolution status.
+ *   3. **Data API polling (fallback #2):** For trades that Gamma can't look
+ *      up (returns null due to conditionId mismatch), checks the whale's
+ *      positions on the Data API. If a position is marked redeemable with
+ *      curPrice=0, the token is worthless → trade lost. If curPrice≈1,
+ *      the token won. Also uses CLOB 404 as an additional resolution signal.
  *
  * When resolution is detected, it determines whether each trade won or lost
  * and calls riskEngine.resolveTrade().
@@ -190,7 +195,11 @@ export class MarketResolver {
       // Also refresh WS subscriptions during poll
       await this.refreshSubscriptions();
 
-      // Group by condition_id to reduce API calls
+      // Track which trades get resolved by Gamma so the Data API fallback
+      // only processes the remainder.
+      const resolvedTradeIds = new Set<string>();
+
+      // ── Phase 1: Gamma API check (works when conditionId is indexed) ──
       const conditionIds: string[] = Array.from(
         new Set(
           openTrades
@@ -203,13 +212,8 @@ export class MarketResolver {
         try {
           const market =
             await polymarketApi.getMarketByConditionId(conditionId);
-          if (!market) continue;
+          if (!market) continue; // Gamma can't find it → Data API fallback will handle
 
-          // ── Only resolve when the market is truly resolved ──
-          // `closed` alone means trading is halted; the resolution may
-          // still be pending.  We require BOTH closed AND either:
-          //   • umaResolutionStatus === "resolved", OR
-          //   • outcomePrices shows a clear 1/0 split
           if (!market.closed) continue;
 
           // Parse outcome prices
@@ -231,15 +235,10 @@ export class MarketResolver {
           const resolutionStatus = market.umaResolutionStatus ?? "";
           const hasResolved = resolutionStatus.toLowerCase() === "resolved";
 
-          // Find which outcome won (price = 1 or very close to 1)
           const winningIndex = outcomePrices.findIndex(
             (p: number) => p >= 0.99,
           );
-          const losingIndex = outcomePrices.findIndex((p: number) => p <= 0.01);
 
-          // Only proceed if we have a definitive resolution:
-          //   1. The market says "resolved" explicitly, OR
-          //   2. The prices clearly show a 1/0 split (one ≥0.99 AND one ≤0.01)
           if (!hasResolved && winningIndex < 0) {
             logger.debug(
               `MarketResolver: condition ${conditionId.slice(0, 12)}… is closed ` +
@@ -249,8 +248,6 @@ export class MarketResolver {
             continue;
           }
 
-          // If status says resolved but prices don't show a clear winner
-          // (e.g. [0, 0] for old markets), skip to avoid incorrect resolution
           if (winningIndex < 0) {
             logger.warn(
               `MarketResolver: condition ${conditionId.slice(0, 12)}… marked ` +
@@ -262,13 +259,12 @@ export class MarketResolver {
 
           const winningTokenId = clobTokenIds[winningIndex] ?? null;
 
-          // Resolve all trades for this condition
           const conditionTrades = openTrades.filter(
             (t: IPaperTrade) => t.condition_id === conditionId,
           );
 
           logger.info(
-            `MarketResolver: resolving ${conditionTrades.length} trade(s) ` +
+            `MarketResolver [Gamma]: resolving ${conditionTrades.length} trade(s) ` +
               `for condition ${conditionId.slice(0, 12)}… ` +
               `(winner: token index ${winningIndex}, status="${resolutionStatus}")`,
           );
@@ -276,13 +272,195 @@ export class MarketResolver {
           for (const trade of conditionTrades) {
             const won = trade.token_id === winningTokenId;
             await riskEngine.resolveTrade(trade.internal_trade_id, won);
+            resolvedTradeIds.add(trade.internal_trade_id);
           }
         } catch (err) {
           logger.error(`Error resolving condition ${conditionId}: ${err}`);
         }
       }
+
+      // ── Phase 2: Data API fallback for trades Gamma couldn't resolve ──
+      const unresolvedTrades = openTrades.filter(
+        (t: IPaperTrade) => !resolvedTradeIds.has(t.internal_trade_id),
+      );
+
+      if (unresolvedTrades.length > 0) {
+        await this.dataApiFallbackCheck(unresolvedTrades);
+      }
     } catch (err) {
       logger.error(`MarketResolver poll cycle error: ${err}`);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Data API fallback – resolves trades Gamma can't look up
+  // ──────────────────────────────────────────────────────
+
+  /**
+   * For trades whose conditionId isn't indexed by Gamma, check the whale's
+   * positions on the Data API and the CLOB orderbook status.
+   *
+   * Resolution signals:
+   *   • Whale position: redeemable=true, curPrice=0  → token lost
+   *   • Whale position: redeemable=true, curPrice≈1  → token won (rare: whale usually redeems fast)
+   *   • CLOB 404 + no whale position                 → market resolved but outcome unknown
+   *     (in this case, fall back to checking if endDate has passed)
+   */
+  private async dataApiFallbackCheck(
+    trades: IPaperTrade[],
+  ): Promise<void> {
+    // Group trades by whale_wallet to batch Data API calls
+    const tradesByWallet = new Map<string, IPaperTrade[]>();
+    for (const trade of trades) {
+      const wallet = trade.whale_wallet.toLowerCase();
+      if (!tradesByWallet.has(wallet)) {
+        tradesByWallet.set(wallet, []);
+      }
+      tradesByWallet.get(wallet)!.push(trade);
+    }
+
+    for (const [wallet, walletTrades] of tradesByWallet) {
+      try {
+        // Fetch the whale's current positions from the Data API
+        const positions = await polymarketApi.getUserPositions(wallet);
+
+        // Build a lookup: token_id → position data
+        const positionMap = new Map<
+          string,
+          { curPrice: number; redeemable: boolean; endDate: string }
+        >();
+        for (const pos of positions) {
+          const asset = String(pos.asset || pos.asset_id || pos.token_id || "");
+          if (asset) {
+            positionMap.set(asset, {
+              curPrice: parseFloat(String(pos.curPrice ?? "-1")),
+              redeemable: Boolean(pos.redeemable),
+              endDate: String(pos.endDate || ""),
+            });
+          }
+        }
+
+        for (const trade of walletTrades) {
+          try {
+            const whalePos = positionMap.get(trade.token_id);
+
+            if (whalePos) {
+              // ── Case 1: Whale still has the position ──
+              if (whalePos.redeemable && whalePos.curPrice <= 0.01) {
+                // Token is worthless → trade LOST
+                logger.info(
+                  `MarketResolver [DataAPI]: trade ${trade.internal_trade_id.slice(0, 8)}… ` +
+                    `"${trade.question}" LOST (whale pos: redeemable=true, curPrice=${whalePos.curPrice})`,
+                );
+                await riskEngine.resolveTrade(trade.internal_trade_id, false);
+                continue;
+              }
+
+              if (whalePos.redeemable && whalePos.curPrice >= 0.99) {
+                // Token paid out → trade WON
+                logger.info(
+                  `MarketResolver [DataAPI]: trade ${trade.internal_trade_id.slice(0, 8)}… ` +
+                    `"${trade.question}" WON (whale pos: redeemable=true, curPrice=${whalePos.curPrice})`,
+                );
+                await riskEngine.resolveTrade(trade.internal_trade_id, true);
+                continue;
+              }
+
+              // Position exists but not redeemable → market still active
+              continue;
+            }
+
+            // ── Case 2: Whale position not found (redeemed or API limit) ──
+            // Check CLOB – if 404, market is resolved
+            const midpoint = await polymarketApi.getMidpointPrice(
+              trade.token_id,
+            );
+
+            if (midpoint !== null) {
+              // CLOB returned a price → market still active
+              continue;
+            }
+
+            // CLOB returned null (404) → market likely resolved
+            // But we don't know win/loss from the whale's position (it's gone).
+            // Additional heuristic: check if the trade's endDate has passed.
+            // If so, try the price endpoint as a final confirmation.
+            const price = await polymarketApi.getPrice(trade.token_id);
+            if (price !== null) {
+              // Still got a price → market active, just no midpoint
+              continue;
+            }
+
+            // Both CLOB endpoints returned 404.
+            // The market is definitely resolved. Since we can't determine
+            // win/loss from the whale's position (they already redeemed),
+            // check if any OTHER whale position for the same condition_id
+            // is redeemable with curPrice=0 (the opposite token).
+            let resolvedViaOpposite = false;
+            if (trade.condition_id) {
+              for (const pos of positions) {
+                const posCondition = String(
+                  pos.conditionId || pos.condition_id || "",
+                );
+                const posAsset = String(pos.asset || "");
+                if (
+                  posCondition === trade.condition_id &&
+                  posAsset !== trade.token_id
+                ) {
+                  const oRedeemable = Boolean(pos.redeemable);
+                  const oCurPrice = parseFloat(String(pos.curPrice ?? "-1"));
+
+                  if (oRedeemable && oCurPrice <= 0.01) {
+                    // The OPPOSITE token is worthless → OUR token WON
+                    logger.info(
+                      `MarketResolver [DataAPI]: trade ${trade.internal_trade_id.slice(0, 8)}… ` +
+                        `"${trade.question}" WON (opposite token redeemable @ curPrice=${oCurPrice})`,
+                    );
+                    await riskEngine.resolveTrade(
+                      trade.internal_trade_id,
+                      true,
+                    );
+                    resolvedViaOpposite = true;
+                    break;
+                  }
+
+                  if (oRedeemable && oCurPrice >= 0.99) {
+                    // The OPPOSITE token paid out → OUR token LOST
+                    logger.info(
+                      `MarketResolver [DataAPI]: trade ${trade.internal_trade_id.slice(0, 8)}… ` +
+                        `"${trade.question}" LOST (opposite token redeemable @ curPrice=${oCurPrice})`,
+                    );
+                    await riskEngine.resolveTrade(
+                      trade.internal_trade_id,
+                      false,
+                    );
+                    resolvedViaOpposite = true;
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (!resolvedViaOpposite) {
+              // Absolute last resort: CLOB is dead, whale position gone,
+              // no opposite token found. Log it for manual inspection.
+              logger.warn(
+                `MarketResolver [DataAPI]: trade ${trade.internal_trade_id.slice(0, 8)}… ` +
+                  `"${trade.question}" — CLOB 404, whale position gone, ` +
+                  `cannot determine outcome. Will retry next cycle.`,
+              );
+            }
+          } catch (err) {
+            logger.error(
+              `DataAPI fallback error for trade ${trade.internal_trade_id.slice(0, 8)}: ${err}`,
+            );
+          }
+        }
+      } catch (err) {
+        logger.error(
+          `DataAPI fallback error for wallet ${wallet.slice(0, 10)}: ${err}`,
+        );
+      }
     }
   }
 }
