@@ -286,9 +286,7 @@ export class TelegramBot {
       }
 
       const keyboard =
-        buttons.length > 0
-          ? Markup.inlineKeyboard(buttons)
-          : undefined;
+        buttons.length > 0 ? Markup.inlineKeyboard(buttons) : undefined;
 
       await ctx.reply(text, {
         parse_mode: "HTML",
@@ -359,9 +357,7 @@ export class TelegramBot {
       }
 
       const keyboard =
-        buttons.length > 0
-          ? Markup.inlineKeyboard(buttons)
-          : undefined;
+        buttons.length > 0 ? Markup.inlineKeyboard(buttons) : undefined;
 
       await ctx.reply(text, {
         parse_mode: "HTML",
@@ -730,8 +726,18 @@ export class TelegramBot {
    */
   private formatDateTime(date: Date): string {
     const months = [
-      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
     ];
     const d = date.getUTCDate();
     const mon = months[date.getUTCMonth()];
@@ -778,8 +784,18 @@ export class TelegramBot {
     }
 
     const months = [
-      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
     ];
     return `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}${timePart}`;
   }
