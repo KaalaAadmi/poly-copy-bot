@@ -6,6 +6,7 @@ import {
   TrackedWallet,
   PaperTrade,
   IPaperTrade,
+  MissedTrade,
 } from "../db/models/index.js";
 import { riskEngine } from "../services/riskEngine.js";
 import { liveTrader } from "../services/liveTrader.js";
@@ -108,6 +109,7 @@ export class TelegramBot {
 
     // Info commands
     this.bot.command("tiers", (ctx) => this.handleTiers(ctx));
+    this.bot.command("missed", (ctx) => this.handleMissed(ctx));
 
     // Pagination callback buttons
     this.bot.on("callback_query", (ctx) => this.handleCallbackQuery(ctx));
@@ -140,6 +142,7 @@ export class TelegramBot {
       `/removewallet [address] – Stop tracking a wallet\n` +
       `/wallets – List all tracked wallets\n` +
       `/tiers – View conviction-weighted sizing tiers\n` +
+      `/missed – View pending missed trades (queued for retry)\n` +
       `/help – Show this message`;
 
     await ctx.reply(text, { parse_mode: "HTML" });
@@ -757,9 +760,7 @@ export class TelegramBot {
         `Max Multiplier Cap: ${config.convictionMaxMultiplier}x\n\n`;
 
       if (enabled) {
-        const tiers = [...config.convictionTiers].sort(
-          (a, b) => a.min - b.min,
-        );
+        const tiers = [...config.convictionTiers].sort((a, b) => a.min - b.min);
 
         text += `<b>Tiers</b>\n`;
         for (let i = 0; i < tiers.length; i++) {
@@ -781,6 +782,62 @@ export class TelegramBot {
     } catch (err) {
       logger.error(`/tiers error: ${err}`);
       await ctx.reply("❌ Error fetching tier info.");
+    }
+  }
+
+  // ──────────────────────────────────────────────────────
+  // /missed – Show pending missed trades queued for retry
+  // ──────────────────────────────────────────────────────
+
+  private async handleMissed(ctx: Context): Promise<void> {
+    try {
+      const pending = await MissedTrade.find({ status: "pending" }).sort({
+        missed_at: -1,
+      });
+
+      const executedCount = await MissedTrade.countDocuments({
+        status: "executed",
+      });
+      const expiredCount = await MissedTrade.countDocuments({
+        status: "expired",
+      });
+
+      if (pending.length === 0) {
+        await ctx.reply(
+          `📭 No pending missed trades.\n\n` +
+            `✅ Executed: ${executedCount} | 🗑 Expired: ${expiredCount}`,
+        );
+        return;
+      }
+
+      let text =
+        `📋 <b>Missed Trades (Pending Retry)</b>  (${pending.length})\n` +
+        `✅ Executed: ${executedCount} | 🗑 Expired: ${expiredCount}\n`;
+
+      for (const m of pending.slice(0, 10)) {
+        const age = Date.now() - new Date(m.missed_at).getTime();
+        const hoursLeft = Math.max(
+          0,
+          24 - age / (60 * 60 * 1000),
+        ).toFixed(1);
+
+        text +=
+          `\n⏳ <b>${m.question}</b>\n` +
+          `  🎯 ${m.direction} @ whale entry: ${(m.whale_entry_price * 100).toFixed(1)}¢\n` +
+          `  💲 Whale size: $${m.whale_usdc_size.toFixed(2)}\n` +
+          `  ⏱ ${hoursLeft}h until expiry\n`;
+      }
+
+      if (pending.length > 10) {
+        text += `\n<i>… and ${pending.length - 10} more</i>`;
+      }
+
+      text += `\n\n<i>Trades are retried when balance frees up (after resolutions).\nExpired after 24h via FIFO cleanup.</i>`;
+
+      await ctx.reply(text, { parse_mode: "HTML" });
+    } catch (err) {
+      logger.error(`/missed error: ${err}`);
+      await ctx.reply("❌ Error fetching missed trades.");
     }
   }
 

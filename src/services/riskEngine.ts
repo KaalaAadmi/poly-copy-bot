@@ -9,6 +9,7 @@ import {
   SystemState,
   ProcessedSignal,
   PaperTrade,
+  MissedTrade,
 } from "../db/models/index.js";
 import { polymarketApi, UserActivity, GammaMarket } from "./polymarketApi.js";
 import { liveTrader } from "./liveTrader.js";
@@ -116,6 +117,10 @@ export class RiskEngine {
             `(need $${investmentAmount.toFixed(2)}, have $${system.current_balance.toFixed(2)})`,
         );
       }
+
+      // ── Store as a missed trade for later retry ──
+      await this.storeMissedTrade(activity, walletAddress, "copy");
+
       await this.markProcessed(tradeId, walletAddress);
       return;
     }
@@ -605,6 +610,10 @@ export class RiskEngine {
 
     logger.info(msg);
     if (this.sendAlert) await this.sendAlert(msg);
+
+    // ── After resolution, try to execute any missed trades ──
+    // Balance may have freed up (especially on wins or partial losses).
+    await this.retryMissedTrades();
   }
 
   // ──────────────────────────────────────────────────────
@@ -633,6 +642,202 @@ export class RiskEngine {
     }
 
     return Math.min(multiplier, config.convictionMaxMultiplier);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Missed Trades – store / retry / cleanup
+  // ──────────────────────────────────────────────────────
+
+  /**
+   * Store a missed trade when we don't have enough balance to copy it.
+   * These will be retried once funds become available (after resolution).
+   */
+  private async storeMissedTrade(
+    activity: UserActivity,
+    walletAddress: string,
+    tradeType: "copy" | "catchup",
+  ): Promise<void> {
+    const signalId = activity.id || activity.transactionHash;
+    const direction = this.inferDirection(activity);
+    const whaleEntryPrice = parseFloat(String(activity.price || "0"));
+    const whaleUsdcSize = parseFloat(String(activity.usdcSize || "0"));
+
+    // Don't store duplicates
+    const existing = await MissedTrade.findOne({ signal_id: signalId });
+    if (existing) return;
+
+    // Don't store if we already have a trade (open or resolved) on this token
+    const existingTrade = await PaperTrade.findOne({ token_id: activity.asset });
+    if (existingTrade) return;
+
+    await MissedTrade.create({
+      signal_id: signalId,
+      whale_wallet: walletAddress.toLowerCase(),
+      token_id: activity.asset,
+      condition_id: activity.conditionId || "",
+      question: activity.title || "Unknown Market",
+      market_slug: activity.eventSlug || activity.slug || "",
+      direction,
+      whale_entry_price: whaleEntryPrice,
+      whale_usdc_size: whaleUsdcSize,
+      trade_type: tradeType,
+      status: "pending",
+      missed_at: new Date(),
+      original_activity: activity as unknown as Record<string, unknown>,
+    });
+
+    logger.info(
+      `📝 Missed trade stored: ${activity.title || activity.asset?.slice(0, 12)} ` +
+        `(whale entry: ${(whaleEntryPrice * 100).toFixed(1)}¢, $${whaleUsdcSize.toFixed(2)} USDC)`,
+    );
+  }
+
+  /**
+   * After a trade resolves (freeing up balance), check if any pending
+   * missed trades can now be executed.
+   *
+   * For each pending missed trade:
+   *   1. Check if we have enough balance
+   *   2. Check if current price ≤ whale_entry_price + slippage
+   *   3. If yes → execute the trade and mark as "executed"
+   *   4. If no → leave it pending (will be cleaned up after 24h)
+   */
+  async retryMissedTrades(): Promise<void> {
+    const pendingMissed = await MissedTrade.find({ status: "pending" }).sort({
+      missed_at: 1,
+    }); // oldest first (FIFO)
+
+    if (pendingMissed.length === 0) return;
+
+    logger.info(
+      `🔄 Checking ${pendingMissed.length} missed trade(s) for retry…`,
+    );
+
+    const system = await this.getSystemState();
+
+    for (const missed of pendingMissed) {
+      // Re-check balance each iteration (it changes as we execute trades)
+      const freshState = await this.getSystemState();
+
+      const baseInvestment =
+        freshState.daily_starting_balance * config.positionSizePct;
+      const convictionMultiplier = this.getConvictionMultiplier(
+        missed.whale_usdc_size,
+      );
+      const investmentAmount = baseInvestment * convictionMultiplier;
+
+      // Not enough balance → stop trying (remaining trades need even more or same)
+      if (investmentAmount - freshState.current_balance > 0.005) {
+        logger.debug(
+          `Missed trade retry: insufficient balance for ${missed.question?.slice(0, 30)}… ` +
+            `(need $${investmentAmount.toFixed(2)}, have $${freshState.current_balance.toFixed(2)})`,
+        );
+        continue;
+      }
+
+      // Check if we already have an open trade on this token
+      const existingOpen = await PaperTrade.findOne({
+        token_id: missed.token_id,
+        status: "Open",
+      });
+      if (existingOpen) {
+        // Already have a position — mark this missed trade as done
+        missed.status = "executed";
+        missed.resolved_at = new Date();
+        await missed.save();
+        continue;
+      }
+
+      // Get current market price
+      let currentPrice = await polymarketApi.getMidpointPrice(missed.token_id);
+      if (currentPrice === null) {
+        currentPrice = await polymarketApi.getPrice(missed.token_id);
+      }
+      if (currentPrice === null || currentPrice <= 0 || currentPrice >= 1) {
+        logger.debug(
+          `Missed trade retry: invalid price for ${missed.token_id.slice(0, 12)}… – skipping`,
+        );
+        continue;
+      }
+
+      // Slippage check: current price must be ≤ whale's entry + slippage
+      const slippage = config.catchupMaxSlippage;
+      if (currentPrice > missed.whale_entry_price + slippage) {
+        const diff = currentPrice - missed.whale_entry_price;
+        logger.debug(
+          `Missed trade retry: price too high for ${missed.question?.slice(0, 30)}… ` +
+            `(current: ${(currentPrice * 100).toFixed(1)}¢, whale: ${(missed.whale_entry_price * 100).toFixed(1)}¢, ` +
+            `diff: +${(diff * 100).toFixed(1)}¢ > limit: ${(slippage * 100).toFixed(1)}¢)`,
+        );
+        continue;
+      }
+
+      // ── Execute the trade ──
+      logger.info(
+        `✅ Missed trade retry: executing ${missed.question} ` +
+          `(current: ${(currentPrice * 100).toFixed(1)}¢, whale: ${(missed.whale_entry_price * 100).toFixed(1)}¢)`,
+      );
+
+      // Reconstruct the activity object for processSignal
+      const syntheticActivity: UserActivity = {
+        id: missed.signal_id + ":retry",
+        type: "TRADE",
+        conditionId: missed.condition_id,
+        asset: missed.token_id,
+        side: "BUY",
+        size: 0,
+        price: missed.whale_entry_price,
+        usdcSize: missed.whale_usdc_size,
+        timestamp: Date.now(),
+        transactionHash: missed.signal_id + ":retry",
+        title: missed.question,
+        slug: missed.market_slug,
+        eventSlug: missed.market_slug,
+        outcomeIndex: missed.direction === "Yes" ? 0 : 1,
+        outcome: missed.direction,
+      };
+
+      await this.processSignal(syntheticActivity, missed.whale_wallet);
+
+      // Mark as executed
+      missed.status = "executed";
+      missed.resolved_at = new Date();
+      await missed.save();
+
+      // Small delay between retries
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+
+  /**
+   * FIFO cleanup: delete pending missed trades older than 24 hours.
+   * Called periodically (e.g., from the daily reset cron or a separate interval).
+   */
+  async cleanupExpiredMissedTrades(): Promise<void> {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const expired = await MissedTrade.find({
+      status: "pending",
+      missed_at: { $lt: cutoff },
+    }).sort({ missed_at: 1 }); // FIFO: oldest first
+
+    if (expired.length === 0) return;
+
+    logger.info(
+      `🗑 Cleaning up ${expired.length} expired missed trade(s) (>24h old)`,
+    );
+
+    for (const trade of expired) {
+      trade.status = "expired";
+      trade.resolved_at = new Date();
+      await trade.save();
+    }
+
+    if (this.sendAlert) {
+      await this.sendAlert(
+        `🗑 Cleaned up ${expired.length} expired missed trade(s) (older than 24h)`,
+      );
+    }
   }
 
   private inferDirection(activity: UserActivity): "Yes" | "No" {

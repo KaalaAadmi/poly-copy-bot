@@ -11,6 +11,7 @@ import {
   ProcessedSignal,
   PaperTrade,
   SystemState,
+  MissedTrade,
 } from "../db/models/index.js";
 import { polymarketApi, GammaMarket } from "./polymarketApi.js";
 import { riskEngine } from "./riskEngine.js";
@@ -381,7 +382,32 @@ export class CatchupService {
     const investmentAmount = baseInvestment * convictionMultiplier;
 
     if (investmentAmount > system.current_balance) {
-      logger.warn(`Catchup: insufficient balance – skipping`);
+      logger.warn(`Catchup: insufficient balance – storing as missed trade`);
+
+      // Store as missed trade for later retry
+      const signalId = syntheticId;
+      const existing = await MissedTrade.findOne({ signal_id: signalId });
+      if (!existing) {
+        await MissedTrade.create({
+          signal_id: signalId,
+          whale_wallet: walletAddress.toLowerCase(),
+          token_id: tokenId,
+          condition_id: conditionId,
+          question: posTitle || market?.question || "Unknown Market",
+          market_slug: posSlug || market?.slug || "",
+          direction: outcome.toLowerCase() === "no" ? "No" : "Yes",
+          whale_entry_price: whaleEntryPrice,
+          whale_usdc_size: whaleUsdcSize,
+          trade_type: "catchup",
+          status: "pending",
+          missed_at: new Date(),
+          original_activity: {},
+        });
+        logger.info(
+          `📝 Missed catchup trade stored: ${posTitle || tokenId.slice(0, 12)}`,
+        );
+      }
+
       await this.markProcessed(syntheticId, walletAddress);
       return;
     }

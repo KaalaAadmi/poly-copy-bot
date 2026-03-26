@@ -8,3 +8,8 @@ export {
   TradeDirection,
   TradeType,
 } from "./PaperTrade.js";
+export {
+  MissedTrade,
+  IMissedTrade,
+  MissedTradeStatus,
+} from "./MissedTrade.js";
