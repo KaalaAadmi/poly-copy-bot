@@ -39,4 +39,29 @@ export const config = {
   catchupMode: (process.env.CATCHUP_MODE || "relative") as
     | "absolute"
     | "relative",
+
+  // ── Conviction-Weighted Sizing ──
+  // When enabled, the investment amount is scaled by a multiplier based on
+  // how much USDC the whale bet. Bigger whale bets → higher conviction → we
+  // size up proportionally.
+  convictionSizingEnabled:
+    (process.env.CONVICTION_SIZING_ENABLED || "true").toLowerCase() === "true",
+
+  // Tiers: [minUsdcSize, multiplier]
+  // The whale's usdcSize is matched against these tiers (highest matching tier wins).
+  // Default tiers based on real whale data distribution:
+  //   <$10    → 1.0x (noise / small plays)
+  //   $10-50  → 1.25x (moderate interest)
+  //   $50-200 → 1.5x  (solid conviction)
+  //   $200+   → 2.0x  (high conviction, whale going big)
+  convictionTiers: JSON.parse(
+    process.env.CONVICTION_TIERS ||
+      '[{"min":0,"multiplier":1},{"min":10,"multiplier":1.25},{"min":50,"multiplier":1.5},{"min":200,"multiplier":2}]',
+  ) as { min: number; multiplier: number }[],
+
+  // Safety cap: maximum multiplier regardless of whale bet size.
+  // Prevents runaway sizing if you misconfigure tiers.
+  convictionMaxMultiplier: parseFloat(
+    process.env.CONVICTION_MAX_MULTIPLIER || "2",
+  ),
 };

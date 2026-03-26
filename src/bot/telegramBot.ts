@@ -106,6 +106,9 @@ export class TelegramBot {
     this.bot.command("mode", (ctx) => this.handleMode(ctx));
     this.bot.command("livepnl", (ctx) => this.handleLivePnl(ctx));
 
+    // Info commands
+    this.bot.command("tiers", (ctx) => this.handleTiers(ctx));
+
     // Pagination callback buttons
     this.bot.on("callback_query", (ctx) => this.handleCallbackQuery(ctx));
 
@@ -136,6 +139,7 @@ export class TelegramBot {
       `/addwallet [address] – Track a new whale wallet\n` +
       `/removewallet [address] – Stop tracking a wallet\n` +
       `/wallets – List all tracked wallets\n` +
+      `/tiers – View conviction-weighted sizing tiers\n` +
       `/help – Show this message`;
 
     await ctx.reply(text, { parse_mode: "HTML" });
@@ -283,11 +287,15 @@ export class TelegramBot {
         const openedAt = this.formatDateTime(trade.opened_at);
         const modeTag = trade.is_live ? "🔴" : "📝";
         const typeTag = trade.trade_type === "catchup" ? "🔄" : "📋";
+        const convTag =
+          trade.conviction_multiplier > 1
+            ? ` 🔥${trade.conviction_multiplier}x`
+            : "";
 
         text +=
           `\n${modeTag}${typeTag} <b>${trade.question}</b>\n` +
           `  🎯 ${trade.direction} @ ${(trade.entry_price * 100).toFixed(1)}¢` +
-          ` · $${trade.paper_investment_amount.toFixed(2)}` +
+          ` · $${trade.paper_investment_amount.toFixed(2)}${convTag}` +
           ` · ${trade.num_shares.toFixed(2)} shares\n` +
           (eventDate ? `  📅 Event: ${eventDate}\n` : "") +
           `  🕐 Opened: ${openedAt}\n`;
@@ -365,6 +373,10 @@ export class TelegramBot {
         const modeTag = trade.is_live ? "🔴" : "📝";
         const typeTag = trade.trade_type === "catchup" ? "🔄" : "📋";
         const statusLabel = trade.status === "Exited" ? " (Whale Exit)" : "";
+        const convTag =
+          trade.conviction_multiplier > 1
+            ? ` 🔥${trade.conviction_multiplier}x`
+            : "";
 
         text +=
           `\n${emoji}${modeTag}${typeTag} <b>${trade.question}</b>${statusLabel}\n` +
@@ -372,7 +384,7 @@ export class TelegramBot {
           (trade.exit_price !== null
             ? ` → ${(trade.exit_price * 100).toFixed(1)}¢`
             : "") +
-          ` → PnL: <code>${pnlStr}</code>\n` +
+          ` → PnL: <code>${pnlStr}</code>${convTag}\n` +
           `  🕐 ${trade.status === "Exited" ? "Exited" : "Resolved"}: ${resolvedAt}\n`;
       }
 
@@ -724,6 +736,51 @@ export class TelegramBot {
     } catch (err) {
       logger.error(`/livepnl error: ${err}`);
       await ctx.reply("❌ Error fetching live PnL from Polymarket.");
+    }
+  }
+
+  // ──────────────────────────────────────────────────────
+  // /tiers – Show conviction-weighted sizing tiers
+  // ──────────────────────────────────────────────────────
+
+  private async handleTiers(ctx: Context): Promise<void> {
+    try {
+      const state = await riskEngine.getSystemState();
+      const baseInvestment =
+        state.daily_starting_balance * config.positionSizePct;
+      const enabled = config.convictionSizingEnabled;
+
+      let text =
+        `🔥 <b>Conviction-Weighted Sizing</b>\n\n` +
+        `Status: ${enabled ? "✅ Enabled" : "❌ Disabled"}\n` +
+        `Base Investment: $${baseInvestment.toFixed(2)} (${(config.positionSizePct * 100).toFixed(1)}% of $${state.daily_starting_balance.toFixed(2)})\n` +
+        `Max Multiplier Cap: ${config.convictionMaxMultiplier}x\n\n`;
+
+      if (enabled) {
+        const tiers = [...config.convictionTiers].sort(
+          (a, b) => a.min - b.min,
+        );
+
+        text += `<b>Tiers</b>\n`;
+        for (let i = 0; i < tiers.length; i++) {
+          const tier = tiers[i];
+          const next = tiers[i + 1];
+          const rangeLabel = next
+            ? `$${tier.min} – $${next.min - 1}`
+            : `$${tier.min}+`;
+          const investAmt = baseInvestment * tier.multiplier;
+          text += `  ${tier.multiplier === 1 ? "📊" : "🔥"} ${rangeLabel}: <b>${tier.multiplier}x</b> → $${investAmt.toFixed(2)}\n`;
+        }
+
+        text += `\n<i>Whale bet size (USDC) determines which tier is used.\nLarger bets = higher conviction = bigger position.</i>`;
+      } else {
+        text += `<i>All trades use the flat base investment of $${baseInvestment.toFixed(2)}.\nSet CONVICTION_SIZING_ENABLED=true to enable.</i>`;
+      }
+
+      await ctx.reply(text, { parse_mode: "HTML" });
+    } catch (err) {
+      logger.error(`/tiers error: ${err}`);
+      await ctx.reply("❌ Error fetching tier info.");
     }
   }
 

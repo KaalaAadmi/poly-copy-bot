@@ -192,6 +192,10 @@ export class CatchupService {
     const curPrice = parseFloat(String(pos.curPrice ?? "-1"));
     const redeemable = Boolean(pos.redeemable);
     const mergeable = Boolean(pos.mergeable);
+    // Whale's total USDC invested in this position (Data API provides initialValue)
+    const whaleUsdcSize = parseFloat(
+      String(pos.initialValue || pos.initial_value || "0"),
+    );
 
     // Skip empty / zero positions
     if (!tokenId || size <= 0) return "skipped";
@@ -333,6 +337,7 @@ export class CatchupService {
       posTitle,
       posSlug,
       posEndDate,
+      whaleUsdcSize,
     );
 
     return "copied";
@@ -354,6 +359,7 @@ export class CatchupService {
     posTitle: string,
     posSlug: string,
     posEndDate: string,
+    whaleUsdcSize: number,
   ): Promise<void> {
     const system = await riskEngine.getSystemState();
 
@@ -367,9 +373,12 @@ export class CatchupService {
       return;
     }
 
-    // Sizing (same as riskEngine: 2% of daily starting balance)
-    const investmentAmount =
+    // Sizing: base = 2% of daily starting balance, scaled by conviction
+    const baseInvestment =
       system.daily_starting_balance * config.positionSizePct;
+    const convictionMultiplier =
+      riskEngine.getConvictionMultiplier(whaleUsdcSize);
+    const investmentAmount = baseInvestment * convictionMultiplier;
 
     if (investmentAmount > system.current_balance) {
       logger.warn(`Catchup: insufficient balance – skipping`);
@@ -443,6 +452,8 @@ export class CatchupService {
       is_live: isLive,
       live_order_id: liveOrderId,
       event_end_date: eventEndDate,
+      whale_usdc_size: whaleUsdcSize,
+      conviction_multiplier: convictionMultiplier,
     });
 
     // Deduct from balance
@@ -474,9 +485,15 @@ export class CatchupService {
       `─────────────────────\n` +
       `📌 Market: ${question}\n` +
       `🎯 Direction: ${direction}\n` +
-      `💰 Investment: $${investmentAmount.toFixed(2)}\n` +
-      `📊 Entry: ${(currentPrice * 100).toFixed(1)}¢ (whale: ${(whaleEntryPrice * 100).toFixed(1)}¢, diff: ${diffLabel})\n` +
+      `💰 Investment: $${investmentAmount.toFixed(2)}` +
+      (convictionMultiplier > 1
+        ? ` (base $${baseInvestment.toFixed(2)} × ${convictionMultiplier}x)`
+        : "") +
+      `\n📊 Entry: ${(currentPrice * 100).toFixed(1)}¢ (whale: ${(whaleEntryPrice * 100).toFixed(1)}¢, diff: ${diffLabel})\n` +
       `🔢 Shares: ${numShares.toFixed(2)}\n` +
+      (convictionMultiplier > 1
+        ? `🔥 Conviction: ${convictionMultiplier}x (whale invested $${whaleUsdcSize.toFixed(0)})\n`
+        : "") +
       `🔗 Whale: ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}\n` +
       (liveOrderId ? `📋 Order ID: ${liveOrderId.slice(0, 12)}…\n` : "") +
       `🆔 Trade: ${internalId.slice(0, 8)}`;

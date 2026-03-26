@@ -88,9 +88,14 @@ export class RiskEngine {
       return;
     }
 
-    // 3. Size calculation  (2 % of daily starting balance)
-    const investmentAmount =
+    // 3. Size calculation  (base: 2% of daily starting balance, scaled by conviction)
+    const baseInvestment =
       system.daily_starting_balance * config.positionSizePct;
+
+    // Conviction-weighted sizing: scale based on whale's bet size (USDC)
+    const whaleUsdcSize = parseFloat(String(activity.usdcSize || "0"));
+    const convictionMultiplier = this.getConvictionMultiplier(whaleUsdcSize);
+    const investmentAmount = baseInvestment * convictionMultiplier;
 
     // Check we have enough liquid balance (small epsilon to avoid
     // floating-point edge cases like 2.150000001 > 2.15)
@@ -186,7 +191,10 @@ export class RiskEngine {
       `📌 Market: ${question}\n` +
       `🎯 Side: ${activity.side || "BUY"} ${outcomeLabel}\n` +
       `💲 Whale Price: ${activity.price || "N/A"}\n` +
-      `📦 Whale Size: ${activity.size || "N/A"}\n` +
+      `📦 Whale Size: ${activity.size || "N/A"} shares ($${whaleUsdcSize.toFixed(2)} USDC)\n` +
+      (convictionMultiplier > 1
+        ? `🔥 Conviction: ${convictionMultiplier}x (whale bet $${whaleUsdcSize.toFixed(0)})\n`
+        : "") +
       `🔗 Token: <code>${tokenId.slice(0, 12)}…</code>\n` +
       (marketUrl ? `🌐 ${marketUrl}\n` : "") +
       `⏱ Processing copy-trade…`;
@@ -265,6 +273,8 @@ export class RiskEngine {
       is_live: isLive,
       live_order_id: liveOrderId,
       event_end_date: eventEndDate,
+      whale_usdc_size: whaleUsdcSize,
+      conviction_multiplier: convictionMultiplier,
     });
 
     // Deduct from current balance
@@ -288,14 +298,21 @@ export class RiskEngine {
 
     // Notify via Telegram
     const modeLabel = isLive ? "🔴 LIVE" : "📝 PAPER";
+    const convictionLabel =
+      convictionMultiplier > 1
+        ? `\n🔥 Conviction: ${convictionMultiplier}x (whale: $${whaleUsdcSize.toFixed(0)})`
+        : "";
     const notif =
-      `� <b>Copy Trade Opened!</b> [${modeLabel}]\n` +
+      `✅ <b>Copy Trade Opened!</b> [${modeLabel}]\n` +
       `─────────────────────\n` +
       `📌 Market: ${question}\n` +
       `🎯 Direction: ${direction}\n` +
-      `💰 Investment: $${investmentAmount.toFixed(2)}\n` +
-      `📊 Entry Price: ${(currentPrice * 100).toFixed(1)}¢\n` +
-      `🔢 Shares: ${numShares.toFixed(2)}\n` +
+      `💰 Investment: $${investmentAmount.toFixed(2)}` +
+      (convictionMultiplier > 1
+        ? ` (base $${baseInvestment.toFixed(2)} × ${convictionMultiplier}x)`
+        : "") +
+      `\n📊 Entry Price: ${(currentPrice * 100).toFixed(1)}¢\n` +
+      `🔢 Shares: ${numShares.toFixed(2)}${convictionLabel}\n` +
       `🔗 Whale: ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}\n` +
       (liveOrderId ? `📋 Order ID: ${liveOrderId.slice(0, 12)}…\n` : "") +
       `🆔 Trade: ${internalId.slice(0, 8)}`;
@@ -593,6 +610,30 @@ export class RiskEngine {
   // ──────────────────────────────────────────────────────
   // Utility
   // ──────────────────────────────────────────────────────
+
+  /**
+   * Calculate the conviction multiplier based on the whale's bet size (USDC).
+   * Larger bets signal higher conviction → we scale up our position.
+   *
+   * Tiers are defined in config.convictionTiers (sorted ascending by min).
+   * The highest matching tier wins. Capped by config.convictionMaxMultiplier.
+   */
+  getConvictionMultiplier(whaleUsdcSize: number): number {
+    if (!config.convictionSizingEnabled || whaleUsdcSize <= 0) return 1;
+
+    const tiers = [...config.convictionTiers].sort((a, b) => a.min - b.min);
+    let multiplier = 1;
+
+    for (const tier of tiers) {
+      if (whaleUsdcSize >= tier.min) {
+        multiplier = tier.multiplier;
+      } else {
+        break; // tiers are sorted ascending, no need to check further
+      }
+    }
+
+    return Math.min(multiplier, config.convictionMaxMultiplier);
+  }
 
   private inferDirection(activity: UserActivity): "Yes" | "No" {
     // Use the outcome field from the Data API if available — it tells us

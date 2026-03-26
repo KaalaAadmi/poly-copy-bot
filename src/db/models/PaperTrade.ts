@@ -25,6 +25,8 @@ export interface IPaperTrade extends Document {
   is_live: boolean;
   live_order_id: string;
   event_end_date: Date | null;
+  whale_usdc_size: number;
+  conviction_multiplier: number;
 }
 
 const PaperTradeSchema = new Schema<IPaperTrade>(
@@ -61,6 +63,8 @@ const PaperTradeSchema = new Schema<IPaperTrade>(
     is_live: { type: Boolean, default: false },
     live_order_id: { type: String, default: "" },
     event_end_date: { type: Date, default: null },
+    whale_usdc_size: { type: Number, default: 0 },
+    conviction_multiplier: { type: Number, default: 1 },
   },
   { timestamps: true },
 );
