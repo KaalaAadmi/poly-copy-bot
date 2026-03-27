@@ -58,7 +58,7 @@ async function fetchAllWhalePositions(): Promise<Record<string, unknown>[]> {
     });
     const positions: Record<string, unknown>[] = Array.isArray(resp.data)
       ? resp.data
-      : resp.data?.positions ?? [];
+      : (resp.data?.positions ?? []);
     all.push(...positions);
     if (positions.length < PAGE_SIZE) break;
     await new Promise((r) => setTimeout(r, 300));
@@ -92,7 +92,9 @@ async function main() {
   console.log("═══════════════════════════════════════════════════════════");
   console.log("              BOT TRADE STATISTICS");
   console.log("═══════════════════════════════════════════════════════════");
-  console.log(`  Total trades:    ${lostTrades.length + wonTrades.length + exitedTrades.length + openTrades.length}`);
+  console.log(
+    `  Total trades:    ${lostTrades.length + wonTrades.length + exitedTrades.length + openTrades.length}`,
+  );
   console.log(`  Won:             ${wonTrades.length}`);
   console.log(`  Lost:            ${lostTrades.length}`);
   console.log(`  Exited:          ${exitedTrades.length}`);
@@ -176,9 +178,7 @@ async function main() {
     // Determine whale outcome
     let whaleOutcome: string;
     const whalePctLoss =
-      whaleInvested > 0
-        ? (Math.abs(whaleCashPnl) / whaleInvested) * 100
-        : 0;
+      whaleInvested > 0 ? (Math.abs(whaleCashPnl) / whaleInvested) * 100 : 0;
 
     if (whaleCashPnl >= 0) {
       whaleOutcome = "✅ Whale actually WON";
@@ -288,7 +288,9 @@ async function main() {
 
   const wTotal = wWon + wLost;
   console.log(`  Won:       ${wWon} positions (PnL: $${wWonValue.toFixed(2)})`);
-  console.log(`  Lost:      ${wLost} positions (PnL: $${wLostValue.toFixed(2)})`);
+  console.log(
+    `  Lost:      ${wLost} positions (PnL: $${wLostValue.toFixed(2)})`,
+  );
   console.log(`  Open:      ${wOpen} positions`);
   console.log(
     `  Win rate:  ${wTotal > 0 ? ((wWon / wTotal) * 100).toFixed(1) : "N/A"}%`,

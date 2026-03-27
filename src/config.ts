@@ -64,4 +64,34 @@ export const config = {
   convictionMaxMultiplier: parseFloat(
     process.env.CONVICTION_MAX_MULTIPLIER || "2",
   ),
+
+  // ── Price Monitor: Stop-Loss / Take-Profit ──
+  // Periodically checks prices on all open trades and exits automatically
+  // when thresholds are breached. This prevents holding losers to $0.
+  priceMonitorEnabled:
+    (process.env.PRICE_MONITOR_ENABLED || "true").toLowerCase() === "true",
+  priceMonitorIntervalMs: parseInt(
+    process.env.PRICE_MONITOR_INTERVAL_MS || "60000",
+    10,
+  ), // 60s
+
+  // Stop-loss: exit if current price drops this far below entry price.
+  // E.g. 0.30 means if you bought at 50¢ and price drops to 20¢, exit.
+  stopLossThreshold: parseFloat(process.env.STOP_LOSS_THRESHOLD || "0.30"),
+
+  // Take-profit: exit if current price rises this far above entry price.
+  // E.g. 0.20 means if you bought at 50¢ and price rises to 70¢, lock in gains.
+  takeProfitThreshold: parseFloat(process.env.TAKE_PROFIT_THRESHOLD || "0.20"),
+
+  // ── Trade Filters ──
+  // Minimum whale bet size (USDC) to copy. Bets below this are noise.
+  minWhaleBetSize: parseFloat(process.env.MIN_WHALE_BET_SIZE || "5"),
+
+  // Maximum entry price. Don't buy when the price is already this high
+  // (little upside, all downside). E.g. 0.85 = skip markets priced > 85¢.
+  maxEntryPrice: parseFloat(process.env.MAX_ENTRY_PRICE || "0.85"),
+
+  // Minimum entry price. Don't buy extremely cheap long-shots.
+  // E.g. 0.05 = skip markets priced < 5¢.
+  minEntryPrice: parseFloat(process.env.MIN_ENTRY_PRICE || "0.05"),
 };

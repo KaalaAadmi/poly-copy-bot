@@ -110,6 +110,7 @@ export class TelegramBot {
     // Info commands
     this.bot.command("tiers", (ctx) => this.handleTiers(ctx));
     this.bot.command("missed", (ctx) => this.handleMissed(ctx));
+    this.bot.command("filters", (ctx) => this.handleFilters(ctx));
 
     // Pagination callback buttons
     this.bot.on("callback_query", (ctx) => this.handleCallbackQuery(ctx));
@@ -142,6 +143,7 @@ export class TelegramBot {
       `/removewallet [address] – Stop tracking a wallet\n` +
       `/wallets – List all tracked wallets\n` +
       `/tiers – View conviction-weighted sizing tiers\n` +
+      `/filters – View trade filters (SL/TP, min bet, price range)\n` +
       `/missed – View pending missed trades (queued for retry)\n` +
       `/help – Show this message`;
 
@@ -816,10 +818,7 @@ export class TelegramBot {
 
       for (const m of pending.slice(0, 10)) {
         const age = Date.now() - new Date(m.missed_at).getTime();
-        const hoursLeft = Math.max(
-          0,
-          24 - age / (60 * 60 * 1000),
-        ).toFixed(1);
+        const hoursLeft = Math.max(0, 24 - age / (60 * 60 * 1000)).toFixed(1);
 
         text +=
           `\n⏳ <b>${m.question}</b>\n` +
@@ -838,6 +837,40 @@ export class TelegramBot {
     } catch (err) {
       logger.error(`/missed error: ${err}`);
       await ctx.reply("❌ Error fetching missed trades.");
+    }
+  }
+
+  // ──────────────────────────────────────────────────────
+  // /filters – Show trade filter & risk management settings
+  // ──────────────────────────────────────────────────────
+
+  private async handleFilters(ctx: Context): Promise<void> {
+    try {
+      const slPct = (config.stopLossThreshold * 100).toFixed(0);
+      const tpPct = (config.takeProfitThreshold * 100).toFixed(0);
+      const minBet = config.minWhaleBetSize.toFixed(2);
+      const maxEntry = (config.maxEntryPrice * 100).toFixed(0);
+      const minEntry = (config.minEntryPrice * 100).toFixed(0);
+      const monitorEnabled = config.priceMonitorEnabled;
+      const intervalSec = (config.priceMonitorIntervalMs / 1000).toFixed(0);
+
+      const text =
+        `🔧 <b>Trade Filters & Risk Management</b>\n\n` +
+        `<b>Price Monitor</b> ${monitorEnabled ? "✅ Enabled" : "❌ Disabled"}\n` +
+        `  Check interval: every ${intervalSec}s\n` +
+        `  🛑 Stop-Loss: -${slPct}¢ below entry → auto-exit\n` +
+        `  💰 Take-Profit: +${tpPct}¢ above entry → lock in gains\n\n` +
+        `<b>Entry Filters</b>\n` +
+        `  💲 Min Whale Bet: $${minBet} (skip noise trades)\n` +
+        `  📈 Max Entry Price: ${maxEntry}¢ (skip high-priced / low-upside)\n` +
+        `  📉 Min Entry Price: ${minEntry}¢ (skip extreme long-shots)\n\n` +
+        `<i>These filters prevent the bot from entering bad trades and ` +
+        `automatically exit positions that move against us.</i>`;
+
+      await ctx.reply(text, { parse_mode: "HTML" });
+    } catch (err) {
+      logger.error(`/filters error: ${err}`);
+      await ctx.reply("❌ Error fetching filter info.");
     }
   }
 

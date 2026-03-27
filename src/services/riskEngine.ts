@@ -68,6 +68,17 @@ export class RiskEngine {
       return;
     }
 
+    // 1b. Minimum whale bet size filter – skip noise trades
+    const whaleUsdcSizeRaw = parseFloat(String(activity.usdcSize || "0"));
+    if (whaleUsdcSizeRaw < config.minWhaleBetSize) {
+      logger.debug(
+        `Signal ${tradeId} ignored – whale bet $${whaleUsdcSizeRaw.toFixed(2)} ` +
+          `< min $${config.minWhaleBetSize} (noise filter)`,
+      );
+      await this.markProcessed(tradeId, walletAddress);
+      return;
+    }
+
     // 2. Exposure check
     const system = await this.getSystemState();
     const todayExposure = await this.getTodayExposure();
@@ -154,6 +165,25 @@ export class RiskEngine {
     if (currentPrice === null || currentPrice <= 0 || currentPrice >= 1) {
       logger.warn(
         `Invalid price for token ${tokenId} – skipping signal ${tradeId}`,
+      );
+      await this.markProcessed(tradeId, walletAddress);
+      return;
+    }
+
+    // 4b. Entry price filter – skip if price is too high (little upside)
+    //     or too low (extreme long-shot)
+    if (currentPrice > config.maxEntryPrice) {
+      logger.info(
+        `Signal ${tradeId} skipped – price ${(currentPrice * 100).toFixed(1)}¢ > max entry ` +
+          `${(config.maxEntryPrice * 100).toFixed(0)}¢ (little upside, high downside)`,
+      );
+      await this.markProcessed(tradeId, walletAddress);
+      return;
+    }
+    if (currentPrice < config.minEntryPrice) {
+      logger.info(
+        `Signal ${tradeId} skipped – price ${(currentPrice * 100).toFixed(1)}¢ < min entry ` +
+          `${(config.minEntryPrice * 100).toFixed(0)}¢ (extreme long-shot)`,
       );
       await this.markProcessed(tradeId, walletAddress);
       return;
@@ -667,7 +697,9 @@ export class RiskEngine {
     if (existing) return;
 
     // Don't store if we already have a trade (open or resolved) on this token
-    const existingTrade = await PaperTrade.findOne({ token_id: activity.asset });
+    const existingTrade = await PaperTrade.findOne({
+      token_id: activity.asset,
+    });
     if (existingTrade) return;
 
     await MissedTrade.create({
@@ -756,6 +788,22 @@ export class RiskEngine {
       if (currentPrice === null || currentPrice <= 0 || currentPrice >= 1) {
         logger.debug(
           `Missed trade retry: invalid price for ${missed.token_id.slice(0, 12)}… – skipping`,
+        );
+        continue;
+      }
+
+      // Entry price filter: same as processSignal
+      if (currentPrice > config.maxEntryPrice) {
+        logger.debug(
+          `Missed trade retry: price ${(currentPrice * 100).toFixed(1)}¢ > max ` +
+            `${(config.maxEntryPrice * 100).toFixed(0)}¢ for ${missed.question?.slice(0, 30)}… – skipping`,
+        );
+        continue;
+      }
+      if (currentPrice < config.minEntryPrice) {
+        logger.debug(
+          `Missed trade retry: price ${(currentPrice * 100).toFixed(1)}¢ < min ` +
+            `${(config.minEntryPrice * 100).toFixed(0)}¢ for ${missed.question?.slice(0, 30)}… – skipping`,
         );
         continue;
       }

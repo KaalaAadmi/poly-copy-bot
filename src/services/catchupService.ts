@@ -201,6 +201,19 @@ export class CatchupService {
     // Skip empty / zero positions
     if (!tokenId || size <= 0) return "skipped";
 
+    // Minimum whale bet size filter – same as riskEngine
+    if (whaleUsdcSize > 0 && whaleUsdcSize < config.minWhaleBetSize) {
+      logger.debug(
+        `Catchup: whale invested $${whaleUsdcSize.toFixed(2)} < min $${config.minWhaleBetSize} ` +
+          `on ${tokenId.slice(0, 12)}… – skipping noise`,
+      );
+      await this.markProcessed(
+        `catchup:${walletAddress.toLowerCase()}:${tokenId}`,
+        walletAddress,
+      );
+      return "skipped";
+    }
+
     // Skip resolved / expired positions – the Data API tells us via
     // curPrice=0, redeemable=true, or mergeable=true. Hitting the CLOB
     // for these just produces 404 errors.
@@ -261,6 +274,24 @@ export class CatchupService {
     }
     if (currentPrice === null || currentPrice <= 0 || currentPrice >= 1) {
       logger.debug(`Catchup: invalid price for ${tokenId} – skipping`);
+      await this.markProcessed(syntheticId, walletAddress);
+      return "skipped";
+    }
+
+    // Entry price filter – same as riskEngine
+    if (currentPrice > config.maxEntryPrice) {
+      logger.info(
+        `Catchup: price ${(currentPrice * 100).toFixed(1)}¢ > max entry ` +
+          `${(config.maxEntryPrice * 100).toFixed(0)}¢ for ${tokenId.slice(0, 12)}… – skipping`,
+      );
+      await this.markProcessed(syntheticId, walletAddress);
+      return "skipped";
+    }
+    if (currentPrice < config.minEntryPrice) {
+      logger.info(
+        `Catchup: price ${(currentPrice * 100).toFixed(1)}¢ < min entry ` +
+          `${(config.minEntryPrice * 100).toFixed(0)}¢ for ${tokenId.slice(0, 12)}… – skipping`,
+      );
       await this.markProcessed(syntheticId, walletAddress);
       return "skipped";
     }

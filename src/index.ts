@@ -2,6 +2,7 @@ import { connectDatabase } from "./db/connection.js";
 import { telegramBot } from "./bot/telegramBot.js";
 import { poller } from "./services/poller.js";
 import { marketResolver } from "./services/marketResolver.js";
+import { priceMonitor } from "./services/priceMonitor.js";
 import { scheduleDailyReset } from "./cron/dailyReset.js";
 import { riskEngine } from "./services/riskEngine.js";
 import { liveTrader } from "./services/liveTrader.js";
@@ -21,7 +22,8 @@ import { logger } from "./utils/logger.js";
  *   5. Run catchup scan (copy existing whale positions)
  *   6. Start the Poller (wallet tracker)
  *   7. Start the Market Resolver (WebSocket + polling)
- *   8. Schedule midnight daily-balance reset
+ *   8. Start the Price Monitor (stop-loss / take-profit)
+ *   9. Schedule midnight daily-balance reset
  */
 async function main(): Promise<void> {
   logger.info("========================================");
@@ -29,11 +31,11 @@ async function main(): Promise<void> {
   logger.info("========================================");
 
   // 1. Database
-  logger.info("[Boot 1/8] Connecting to MongoDB…");
+  logger.info("[Boot 1/9] Connecting to MongoDB…");
   await connectDatabase();
 
   // 2. System state
-  logger.info("[Boot 2/8] Loading SystemState…");
+  logger.info("[Boot 2/9] Loading SystemState…");
   const state = await riskEngine.getSystemState();
   logger.info(
     `  SystemState loaded – balance: $${state.current_balance.toFixed(2)}, ` +
@@ -50,7 +52,7 @@ async function main(): Promise<void> {
   }
 
   // 3. Live trader (auto-init if private key set AND live mode was on)
-  logger.info("[Boot 3/8] Checking live trader…");
+  logger.info("[Boot 3/9] Checking live trader…");
   if (config.privateKey && state.live_mode) {
     try {
       await liveTrader.init();
@@ -66,7 +68,7 @@ async function main(): Promise<void> {
   }
 
   // 4. Telegram
-  logger.info("[Boot 4/8] Launching Telegram bot…");
+  logger.info("[Boot 4/9] Launching Telegram bot…");
   try {
     await telegramBot.launch();
     logger.info("  Telegram bot launched successfully");
@@ -77,7 +79,7 @@ async function main(): Promise<void> {
 
   // 5. Catchup – scan tracked wallets and copy eligible positions
   //    (runs after Telegram is up so notifications are delivered)
-  logger.info("[Boot 5/8] Running catchup scan…");
+  logger.info("[Boot 5/9] Running catchup scan…");
   catchupService.setAlertCallback((msg) => telegramBot.sendAlert(msg));
   try {
     await catchupService.catchupAll();
@@ -87,15 +89,20 @@ async function main(): Promise<void> {
   }
 
   // 6. Poller
-  logger.info("[Boot 6/8] Starting Poller…");
+  logger.info("[Boot 6/9] Starting Poller…");
   poller.start();
 
   // 7. Market Resolver
-  logger.info("[Boot 7/8] Starting Market Resolver…");
+  logger.info("[Boot 7/9] Starting Market Resolver…");
   marketResolver.start();
 
-  // 8. Cron
-  logger.info("[Boot 8/8] Scheduling daily reset…");
+  // 8. Price Monitor (stop-loss / take-profit)
+  logger.info("[Boot 8/9] Starting Price Monitor…");
+  priceMonitor.setAlertCallback((msg) => telegramBot.sendAlert(msg));
+  priceMonitor.start();
+
+  // 9. Cron
+  logger.info("[Boot 9/9] Scheduling daily reset…");
   scheduleDailyReset();
 
   logger.info("========================================");
@@ -107,6 +114,11 @@ async function main(): Promise<void> {
     `Config: poll=${config.pollIntervalMs}ms, exposure=${config.dailyMaxExposure}, ` +
       `size=${config.positionSizePct}, catchup=${config.catchupEnabled}, ` +
       `catchupMode=${config.catchupMode}, slippage=${config.catchupMaxSlippage}`,
+  );
+  logger.info(
+    `Filters: minWhaleBet=$${config.minWhaleBetSize}, ` +
+      `entryPrice=${(config.minEntryPrice * 100).toFixed(0)}¢-${(config.maxEntryPrice * 100).toFixed(0)}¢, ` +
+      `SL=-${(config.stopLossThreshold * 100).toFixed(0)}¢, TP=+${(config.takeProfitThreshold * 100).toFixed(0)}¢`,
   );
 }
 
